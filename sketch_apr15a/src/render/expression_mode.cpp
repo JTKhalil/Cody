@@ -1580,11 +1580,13 @@ void expressionModeTick() {
     int a = ACT_BLINK;
     for (int tries = 0; tries < 12; tries++) {
       a = random(0, ACT_COUNT);
-      // 移除：魔法/泡泡/音乐/钓鱼
-      if (a == ACT_MAGIC || a == ACT_BUBBLES || a == ACT_MUSIC || a == ACT_FISHING) continue;
+      // 移除：魔法/泡泡/音乐/钓鱼/爱心暴击/爱心雨/打招呼
+      if (a == ACT_MAGIC || a == ACT_BUBBLES || a == ACT_MUSIC || a == ACT_FISHING ||
+          a == ACT_LOVE || a == ACT_HEART_RAIN || a == ACT_WAVE) continue;
       break;
     }
-    if (a == ACT_MAGIC || a == ACT_BUBBLES || a == ACT_MUSIC || a == ACT_FISHING) a = ACT_BLINK;
+    if (a == ACT_MAGIC || a == ACT_BUBBLES || a == ACT_MUSIC || a == ACT_FISHING ||
+        a == ACT_LOVE || a == ACT_HEART_RAIN || a == ACT_WAVE) a = ACT_BLINK;
 
     // 睡觉表情限流（10 分钟冷却）
     if (a == ACT_SLEEPING && lastSleepTime > 0 && (nowReal - lastSleepTime) < SLEEP_COOLDOWN) {
