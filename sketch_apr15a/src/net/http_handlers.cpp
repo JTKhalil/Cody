@@ -9,6 +9,7 @@ void handleBrightness() {
   if (server.hasArg("v")) {
     int v = constrain(server.arg("v").toInt(), 0, 255);
     int pwm = (v * v) / 255;
+    backlightValue = v;
     analogWrite(TFT_BLK, pwm);
   }
   server.send(200, "text/plain", "OK");

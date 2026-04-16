@@ -59,6 +59,7 @@ WebServer server(80);
 
 int lastMinute = -1;
 int displayMode = 0;
+int backlightValue = 255;
 
 int imageCount = 0;
 int currentImageIndex = 0;
@@ -101,7 +102,9 @@ void setup() {
   // 按键：低电平按下
   pinMode(BTN_BOOT_PIN, INPUT_PULLUP);
   
-  pinMode(TFT_BLK, OUTPUT); analogWrite(TFT_BLK, 255);
+  pinMode(TFT_BLK, OUTPUT);
+  backlightValue = 255;
+  analogWrite(TFT_BLK, 255);
   SPI.begin(8, -1, 10, TFT_CS);
   tft.init(240, 240); tft.setRotation(1); tft.fillScreen(ST77XX_BLACK);
   

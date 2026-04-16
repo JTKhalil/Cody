@@ -130,6 +130,7 @@ void processSerialCommand(const String& payload) {
     resDoc["free"] = (t - u) / 1024;
   } else if (cmd == "bright") {
     int v = constrain(doc["v"].as<int>(), 0, 255);
+    backlightValue = v;
     analogWrite(TFT_BLK, (v * v) / 255);
   } else if (cmd == "format_fs") {
     LittleFS.format();

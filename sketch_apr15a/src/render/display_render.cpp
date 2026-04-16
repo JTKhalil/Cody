@@ -171,8 +171,7 @@ static void drawClaudeBotPixelArt(int centerX, int topY, int s, uint16_t eyeColo
 
 void drawBootSplash() {
   // 暗色底 + 橙色像素机器人 + Hello Cody
-  // 选用较暗的中性深灰（比纯黑更柔和）
-  const uint16_t bgDark = tft.color565(28, 28, 31); // ~ #1c1c1f
+  const uint16_t bgDark = ST77XX_BLACK;
   tft.fillScreen(bgDark);
 
   // 机器人 + 文案：整体居中

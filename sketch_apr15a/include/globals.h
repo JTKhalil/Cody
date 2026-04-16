@@ -73,6 +73,9 @@ extern size_t totalWritten;
 
 extern String serialBuffer;
 
+// 背光亮度（0-255，逻辑值；实际 PWM 可能做非线性映射）
+extern int backlightValue;
+
 // WiFi 回退保护与状态变量
 extern bool isTryingNewWifi;
 extern String targetSSID;

@@ -2,6 +2,32 @@
 #include "include/storage/image_store.h"
 #include "include/core/config_store.h"
 
+static void setBacklight(int v) {
+  v = constrain(v, 0, 255);
+  int pwm = (v * v) / 255; // 与其它位置一致的感知亮度映射
+  analogWrite(TFT_BLK, pwm);
+}
+
+static void fadeBacklight(int fromV, int toV, int totalMs) {
+  fromV = constrain(fromV, 0, 255);
+  toV = constrain(toV, 0, 255);
+  const int steps = 12;
+  for (int i = 0; i <= steps; i++) {
+    int v = fromV + (toV - fromV) * i / steps;
+    setBacklight(v);
+    delay(totalMs / steps);
+    yield();
+  }
+}
+
+static void displayImageWithTransition(int slot) {
+  // 更自然的轮播过渡：背光淡出 -> 切图 -> 淡入
+  int target = constrain(backlightValue, 0, 255);
+  fadeBacklight(target, max(0, target / 10), 160); // 淡出到 10%
+  displayImageFromFile(slot);
+  fadeBacklight(max(0, target / 10), target, 220); // 淡入
+}
+
 void scanImages() {
   imageCount = 0;
   for (int i = 0; i < MAX_IMAGES; i++) {
@@ -58,7 +84,7 @@ void nextImage() {
   do {
     currentImageIndex = (currentImageIndex + 1) % MAX_IMAGES;
     if (LittleFS.exists("/img" + String(currentImageIndex) + ".bin")) {
-      if (displayMode == 0) displayImageFromFile(currentImageIndex);
+      if (displayMode == 0) displayImageWithTransition(currentImageIndex);
       lastImageSwitch = millis();
       saveConfig();
       break;
@@ -72,7 +98,7 @@ void prevImage() {
   do {
     currentImageIndex = (currentImageIndex - 1 + MAX_IMAGES) % MAX_IMAGES;
     if (LittleFS.exists("/img" + String(currentImageIndex) + ".bin")) {
-      if (displayMode == 0) displayImageFromFile(currentImageIndex);
+      if (displayMode == 0) displayImageWithTransition(currentImageIndex);
       lastImageSwitch = millis();
       saveConfig();
       break;
