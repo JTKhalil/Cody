@@ -193,7 +193,7 @@ void setup() {
       wm.setAPCallback(configModeCallback);
       wm.setConfigPortalTimeout(180); 
       
-      if (!wm.startConfigPortal("Mochi-Screen")) {
+      if (!wm.startConfigPortal("Cody-Screen")) {
         tft.fillScreen(ST77XX_BLACK); 
         u8g2.setForegroundColor(ST77XX_RED); 
         u8g2.setCursor(10, 96); u8g2.print("配网超时, 正在重启...");

@@ -7,7 +7,7 @@ const char INDEX_HTML[] PROGMEM = R"=====(
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
-    <title>Mochi 控制面板</title>
+    <title>Cody 控制面板</title>
     <style>
         *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
         body{background:#121214;color:#fff;font-family:-apple-system,Arial,sans-serif;padding:16px;padding-bottom:60px;}
