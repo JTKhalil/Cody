@@ -130,11 +130,58 @@ void displayNoteOnScreen() {
   printWrappedUTF8(text, 10, 101, 220);
 }
 
-void refreshDisplayByMode() {
+static void setBacklightMapped(int v) {
+  v = constrain(v, 0, 255);
+  int pwm = (v * v) / 255; // 与全局亮度设置一致的感知映射
+  analogWrite(TFT_BLK, pwm);
+}
+
+static void fadeBacklightMapped(int fromV, int toV, int totalMs) {
+  fromV = constrain(fromV, 0, 255);
+  toV = constrain(toV, 0, 255);
+  const int steps = 10;
+  for (int i = 0; i <= steps; i++) {
+    int v = fromV + (toV - fromV) * i / steps;
+    setBacklightMapped(v);
+    delay(totalMs / steps);
+    yield();
+  }
+}
+
+static void drawByModeOnce() {
   if (displayMode == 0) loadSavedImage();
   else if (displayMode == 1) drawClockFace();
   else if (displayMode == 2) displayNoteOnScreen();
   else if (displayMode == 3) expressionModeEnter();
+}
+
+void refreshDisplayByMode() {
+  // 仅在“模式变化”时做淡入淡出，避免时钟/笔记刷新时频繁闪烁
+  static int lastMode = -1;
+  const bool modeChanged = (displayMode != lastMode);
+
+  if (!modeChanged) {
+    drawByModeOnce();
+    return;
+  }
+
+  // 第一次进入（开机）不做过渡，避免启动变慢
+  if (lastMode < 0) {
+    lastMode = displayMode;
+    drawByModeOnce();
+    // 确保背光与逻辑亮度一致
+    setBacklightMapped(backlightValue);
+    return;
+  }
+
+  lastMode = displayMode;
+
+  // 过渡：背光淡出 -> 绘制新模式 -> 背光淡入
+  const int target = constrain(backlightValue, 0, 255);
+  const int dim = max(0, target / 12); // 约 8%
+  fadeBacklightMapped(target, dim, 110);
+  drawByModeOnce();
+  fadeBacklightMapped(dim, target, 160);
 }
 
 static void drawClaudeBotPixelArt(int centerX, int topY, int s, uint16_t eyeColor) {
