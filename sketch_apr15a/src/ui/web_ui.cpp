@@ -30,6 +30,7 @@ const char INDEX_HTML[] PROGMEM = R"=====(
         .mode-btn.img-mode.active{background:linear-gradient(135deg,#e67e22,#d35400);color:#fff;border-color:#e67e22}
         .mode-btn.clock-mode.active{background:linear-gradient(135deg,#3498db,#2980b9);color:#fff;border-color:#3498db}
         .mode-btn.note-mode.active{background:linear-gradient(135deg,#f1c40f,#f39c12);color:#fff;border-color:#f1c40f}
+        .mode-btn.expr-mode.active{background:linear-gradient(135deg,#9b59b6,#8e44ad);color:#fff;border-color:#9b59b6}
         .info-text{background:#2a2a2f;padding:12px;border-radius:10px;font-size:14px;margin-top:15px;text-align:center;color:#ccc}
         .slot-grid{display:grid;grid-template-columns:1fr 1fr;gap:15px;margin:15px 0}
         .slot-card{background:#2a2a2f;border-radius:12px;padding:12px;text-align:center;display:flex;flex-direction:column;}
@@ -105,6 +106,9 @@ const char INDEX_HTML[] PROGMEM = R"=====(
             </div>
             <div id="btnNoteMode" class="mode-btn note-mode" data-mode="2">
                 <div class="mode-name">📝 笔记模式</div><div class="mode-desc" style="font-size:12px;color:#eee">在屏幕上排版显示笔记</div>
+            </div>
+            <div id="btnExprMode" class="mode-btn expr-mode" data-mode="3">
+                <div class="mode-name">😊 表情模式</div><div class="mode-desc" style="font-size:12px;color:#eee">随机播放可爱表情动画</div>
             </div>
         </div>
         <div class="info-text" id="modeInfo">当前: 图片模式</div>
@@ -350,12 +354,15 @@ const char INDEX_HTML[] PROGMEM = R"=====(
         fetch('/set_mode?mode='+m).then(r=>r.json()).then(d=>{
             if(d.status=='ok'){
                 mode=m;
-                $('btnImgMode').classList[m===0?'add':'remove']('active'); $('btnClockMode').classList[m===1?'add':'remove']('active'); $('btnNoteMode').classList[m===2?'add':'remove']('active');
-                if(m===0) $('modeInfo').innerHTML='当前状态: 运行图片显示'; else if(m===1) $('modeInfo').innerHTML='当前状态: 显示实时时钟'; else if(m===2) $('modeInfo').innerHTML='当前状态: 显示屏幕笔记';
+                $('btnImgMode').classList[m===0?'add':'remove']('active'); $('btnClockMode').classList[m===1?'add':'remove']('active'); $('btnNoteMode').classList[m===2?'add':'remove']('active'); $('btnExprMode').classList[m===3?'add':'remove']('active');
+                if(m===0) $('modeInfo').innerHTML='当前状态: 运行图片显示';
+                else if(m===1) $('modeInfo').innerHTML='当前状态: 显示实时时钟';
+                else if(m===2) $('modeInfo').innerHTML='当前状态: 显示屏幕笔记';
+                else if(m===3) $('modeInfo').innerHTML='当前状态: 随机表情动画';
             }
         });
     }
-    $('btnImgMode').addEventListener('click',()=>setMode(0)); $('btnClockMode').addEventListener('click',()=>setMode(1)); $('btnNoteMode').addEventListener('click',()=>setMode(2));
+    $('btnImgMode').addEventListener('click',()=>setMode(0)); $('btnClockMode').addEventListener('click',()=>setMode(1)); $('btnNoteMode').addEventListener('click',()=>setMode(2)); $('btnExprMode').addEventListener('click',()=>setMode(3));
     
     window.clickSlotAction = function(i) {
         if(uploading){showToast('上传中请稍候');return;}
@@ -601,8 +608,11 @@ const char INDEX_HTML[] PROGMEM = R"=====(
     
     fetch('/get_mode').then(r=>r.json()).then(d=>{
         mode=d.mode;
-        $('btnImgMode').classList[mode===0?'add':'remove']('active'); $('btnClockMode').classList[mode===1?'add':'remove']('active'); $('btnNoteMode').classList[mode===2?'add':'remove']('active'); 
-        if(mode===0) $('modeInfo').innerHTML='当前状态: 运行图片显示'; else if(mode===1) $('modeInfo').innerHTML='当前状态: 显示实时时钟'; else if(mode===2) $('modeInfo').innerHTML='当前状态: 显示屏幕笔记';
+        $('btnImgMode').classList[mode===0?'add':'remove']('active'); $('btnClockMode').classList[mode===1?'add':'remove']('active'); $('btnNoteMode').classList[mode===2?'add':'remove']('active'); $('btnExprMode').classList[mode===3?'add':'remove']('active');
+        if(mode===0) $('modeInfo').innerHTML='当前状态: 运行图片显示';
+        else if(mode===1) $('modeInfo').innerHTML='当前状态: 显示实时时钟';
+        else if(mode===2) $('modeInfo').innerHTML='当前状态: 显示屏幕笔记';
+        else if(mode===3) $('modeInfo').innerHTML='当前状态: 随机表情动画';
     });
     
     fetch('/ota_info').then(r=>r.json()).then(d=>{ $('versionLabel').innerHTML='当前版本: V'+d.current; $('checkUpdateBtn').disabled=false; });

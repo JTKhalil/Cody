@@ -3,6 +3,7 @@
 #include "include/core/config_store.h"
 #include "include/storage/image_store.h"
 #include "include/render/display_render.h"
+#include "include/render/expression_mode.h"
 #include "include/net/http_handlers.h"
 #include "include/storage/note_store.h"
 #include "include/net/ota_update.h"
@@ -118,10 +119,7 @@ void setup() {
   esp_wifi_get_config(WIFI_IF_STA, &conf);
   String lastSSID = String((char*)conf.sta.ssid);
 
-  tft.fillScreen(ST77XX_BLACK);
-  u8g2.setForegroundColor(ST77XX_WHITE);
-  u8g2.setCursor(10, 30); 
-  u8g2.print("系统启动中...");
+  drawBootSplash();
 
   bool serialDetected = false;
   unsigned long bootWait = millis();
@@ -270,7 +268,7 @@ static void toggleInfoPage() {
 }
 
 static void cycleDisplayMode() {
-  displayMode = (displayMode + 1) % 3;
+  displayMode = (displayMode + 1) % 4;
   saveConfig();
   refreshDisplayByMode();
 }
@@ -446,5 +444,8 @@ void loop() {
            }
        }
     }
+  }
+  else if (displayMode == 3) {
+    expressionModeTick();
   }
 }

@@ -9,3 +9,6 @@ void displayNoteOnScreen();
 void drawSystemInfoPage();
 void drawHoldProgress(const char* title, const char* hint, int secondsHeld, int totalSeconds);
 
+// 开机页（小机器人 + Hello 文案）
+void drawBootSplash();
+

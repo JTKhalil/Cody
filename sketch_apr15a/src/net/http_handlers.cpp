@@ -245,7 +245,7 @@ void handleGetMode() {
 void handleSetMode() {
   if (server.hasArg("mode")) {
     int nM = server.arg("mode").toInt();
-    if (nM >= 0 && nM <= 2) {
+    if (nM >= 0 && nM <= 3) {
       displayMode = nM;
       saveConfig();
       refreshDisplayByMode();

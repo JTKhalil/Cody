@@ -1,5 +1,6 @@
 #include "include/globals.h"
 #include "include/render/display_render.h"
+#include "include/render/expression_mode.h"
 
 // forward decls from other modules
 void loadSavedImage();
@@ -133,6 +134,74 @@ void refreshDisplayByMode() {
   if (displayMode == 0) loadSavedImage();
   else if (displayMode == 1) drawClockFace();
   else if (displayMode == 2) displayNoteOnScreen();
+  else if (displayMode == 3) expressionModeEnter();
+}
+
+static void drawClaudeBotPixelArt(int centerX, int topY, int s, uint16_t eyeColor) {
+  // 轻量像素画：用 fillRect 放大像素块绘制（避免塞位图占空间）
+  // 机器人颜色：与表情模式背景同款橙色
+  const uint16_t BOT = tft.color565(218, 17, 0);
+  const uint16_t EYE = eyeColor;
+
+  // 以 centerX 为中心绘制
+  // 主体：宽 10s，高 6s（纵向拉伸，避免“扁”）；左右“耳朵”各 2s
+  int bodyW = 10 * s;
+  int bodyH = 6 * s;
+  int x0 = centerX - bodyW / 2;
+  int y0 = topY;
+
+  // 主体
+  tft.fillRect(x0, y0, bodyW, bodyH, BOT);
+  // 左右耳朵（像素感）
+  tft.fillRect(x0 - 2 * s, y0 + 2 * s, 2 * s, 2 * s, BOT);
+  tft.fillRect(x0 + bodyW, y0 + 2 * s, 2 * s, 2 * s, BOT);
+
+  // 眼睛：两个 1s 方块
+  tft.fillRect(x0 + 2 * s, y0 + 2 * s, s, s, EYE);
+  tft.fillRect(x0 + 7 * s, y0 + 2 * s, s, s, EYE);
+
+  // 腿：4 条，每条宽 1s 高 2s（更短一些）
+  int legY = y0 + bodyH;
+  int legH = 2 * s;
+  tft.fillRect(x0 + 1 * s, legY, s, legH, BOT);
+  tft.fillRect(x0 + 3 * s, legY, s, legH, BOT);
+  tft.fillRect(x0 + 6 * s, legY, s, legH, BOT);
+  tft.fillRect(x0 + 8 * s, legY, s, legH, BOT);
+}
+
+void drawBootSplash() {
+  // 暗色底 + 橙色像素机器人 + Hello Cody
+  // 选用较暗的中性深灰（比纯黑更柔和）
+  const uint16_t bgDark = tft.color565(28, 28, 31); // ~ #1c1c1f
+  tft.fillScreen(bgDark);
+
+  // 机器人 + 文案：整体居中
+  const int s = 12; // 像素块大小
+  const int bodyH = 6 * s;
+  const int legH = 2 * s;
+  const int botH = bodyH + legH;
+
+  const char* msg = "Hello Cody";
+  tft.setTextColor(ST77XX_WHITE);
+  const int textSize = 2;
+  tft.setTextSize(textSize);
+  int16_t x1, y1;
+  uint16_t w, h;
+  tft.getTextBounds(msg, 0, 0, &x1, &y1, &w, &h);
+
+  const int gap = 6; // logo 与字的间距（越小越贴近）
+  const int groupH = botH + gap + (int)h;
+  const int topY = (240 - groupH) / 2;
+
+  drawClaudeBotPixelArt(120, topY, s, ST77XX_BLACK);
+
+  // “加粗”效果：叠印两次（向右偏移 1px）
+  int textX = (240 - (int)w) / 2;
+  int textY = topY + botH + gap;
+  tft.setCursor(textX, textY);
+  tft.print(msg);
+  tft.setCursor(textX + 1, textY);
+  tft.print(msg);
 }
 
 static void drawKeyValueLine(int y, const String& key, const String& val, uint16_t keyColor, uint16_t valColor) {

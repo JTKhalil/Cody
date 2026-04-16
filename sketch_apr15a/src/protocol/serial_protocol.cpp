@@ -116,7 +116,7 @@ void processSerialCommand(const String& payload) {
     resDoc["mode"] = displayMode;
   } else if (cmd == "set_mode") {
     int nM = doc["mode"].as<int>();
-    if (nM >= 0 && nM <= 2) {
+    if (nM >= 0 && nM <= 3) {
       displayMode = nM;
       saveConfig();
       refreshDisplayByMode();
