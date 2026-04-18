@@ -5,6 +5,7 @@
 #include "include/storage/image_store.h"
 #include "include/render/display_render.h"
 #include "include/net/ota_update.h"
+#include "include/net/system_ops.h"
 
 void processSerialCommand(const String& payload) {
   DynamicJsonDocument doc(4096);
@@ -119,7 +120,9 @@ void processSerialCommand(const String& payload) {
     if (nM >= 0 && nM <= 3) {
       displayMode = nM;
       saveConfig();
-      refreshDisplayByMode();
+      if (!settingsActive) {
+        refreshDisplayByMode();
+      }
     } else {
       resDoc["status"] = "error";
     }
@@ -139,8 +142,7 @@ void processSerialCommand(const String& payload) {
     saveConfig();
     if (displayMode == 0) tft.fillScreen(0);
   } else if (cmd == "reset_system") {
-    WiFiManager wm;
-    wm.resetSettings();
+    factoryResetWifiCredentials();
     Serial.println("{\"cmd\":\"reset_system\",\"status\":\"ok\"}");
     delay(1000);
     ESP.restart();

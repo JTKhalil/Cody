@@ -249,7 +249,10 @@ void handleSetMode() {
     if (nM >= 0 && nM <= 3) {
       displayMode = nM;
       saveConfig();
-      refreshDisplayByMode();
+      // 在设置页内仅后台切换模式并落盘，不抢屏；退出设置时 refreshDisplayByMode() 会显示新模式
+      if (!settingsActive) {
+        refreshDisplayByMode();
+      }
       server.send(200, "application/json", "{\"status\":\"ok\"}");
       return;
     }

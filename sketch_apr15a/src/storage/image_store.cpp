@@ -91,18 +91,3 @@ void nextImage() {
     }
   } while (currentImageIndex != startIndex);
 }
-
-void prevImage() {
-  if (imageCount <= 1) return;
-  int startIndex = currentImageIndex;
-  do {
-    currentImageIndex = (currentImageIndex - 1 + MAX_IMAGES) % MAX_IMAGES;
-    if (LittleFS.exists("/img" + String(currentImageIndex) + ".bin")) {
-      if (displayMode == 0) displayImageWithTransition(currentImageIndex);
-      lastImageSwitch = millis();
-      saveConfig();
-      break;
-    }
-  } while (currentImageIndex != startIndex);
-}
-

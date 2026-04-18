@@ -7,33 +7,138 @@ void loadSavedImage();
 
 void drawClockFace() {
   struct tm timeinfo;
-  if (!getLocalTime(&timeinfo)) return;
+  // 重要：getLocalTime() 默认会阻塞等待（可达数秒），会导致开机/切模式卡在上一屏（例如 Logo）。
+  // 这里使用 0ms 超时，确保时钟界面永不阻塞主循环；未校时则显示占位 UI。
+  const bool timeOk = getLocalTime(&timeinfo, 0);
+  if (!timeOk) {
+    tft.fillScreen(ST77XX_BLACK);
+    u8g2.setFont(u8g2_font_wqy16_t_gb2312);
+    u8g2.setFontMode(1);
+    u8g2.setForegroundColor(ST77XX_WHITE);
+    const char* msg1 = "时间未校准";
+    const char* msg2 = "正在连接WiFi校时...";
+    int w1 = u8g2.getUTF8Width(msg1);
+    int w2 = u8g2.getUTF8Width(msg2);
+    u8g2.setCursor((240 - w1) / 2, 112);
+    u8g2.print(msg1);
+    u8g2.setForegroundColor(0xAD55);
+    u8g2.setCursor((240 - w2) / 2, 140);
+    u8g2.print(msg2);
+    // 与 loop 里「分钟变化才重画」对齐，避免刚切到时钟后立刻再全屏画一次导致闪屏
+    lastMinute = -1;
+    return;
+  }
 
-  tft.fillScreen(ST77XX_BLACK);
+  // Mario 风格 UI（简化像素元素）：天空/云/金币/砖块/水管/地面
+  const uint16_t SKY = tft.color565(92, 156, 255);
+  const uint16_t CLOUD = tft.color565(252, 252, 252);
+  const uint16_t CLOUD_S = tft.color565(210, 230, 255);
+  const uint16_t GROUND = tft.color565(156, 92, 44);
+  const uint16_t GROUND_D = tft.color565(120, 70, 30);
+  const uint16_t GRASS = tft.color565(60, 200, 80);
+  const uint16_t BRICK = tft.color565(200, 108, 56);
+  const uint16_t BRICK_D = tft.color565(150, 70, 30);
+  const uint16_t PIPE = tft.color565(20, 180, 70);
+  const uint16_t PIPE_D = tft.color565(10, 120, 50);
+  const uint16_t COIN = tft.color565(255, 210, 0);
+  const uint16_t COIN_D = tft.color565(200, 150, 0);
+
+  tft.fillScreen(SKY);
+
+  auto drawCloud = [&](int x, int y, int s) {
+    tft.fillCircle(x + 10 * s, y + 6 * s, 6 * s, CLOUD);
+    tft.fillCircle(x + 18 * s, y + 4 * s, 7 * s, CLOUD);
+    tft.fillCircle(x + 28 * s, y + 6 * s, 6 * s, CLOUD);
+    tft.fillRoundRect(x + 8 * s, y + 6 * s, 26 * s, 10 * s, 6 * s, CLOUD);
+    // 轻微阴影
+    tft.drawRoundRect(x + 8 * s, y + 6 * s, 26 * s, 10 * s, 6 * s, CLOUD_S);
+  };
+
+  auto drawCoin = [&](int cx, int cy, int r) {
+    tft.fillCircle(cx, cy, r, COIN);
+    tft.drawCircle(cx, cy, r, COIN_D);
+    tft.drawFastVLine(cx, cy - r + 2, 2 * r - 4, COIN_D);
+  };
+
+  auto drawBrick = [&](int x, int y, int s) {
+    tft.fillRect(x, y, 10 * s, 8 * s, BRICK);
+    tft.drawRect(x, y, 10 * s, 8 * s, BRICK_D);
+    // 砖缝
+    tft.drawFastHLine(x, y + 4 * s, 10 * s, BRICK_D);
+    tft.drawFastVLine(x + 5 * s, y, 8 * s, BRICK_D);
+  };
+
+  auto drawPipe = [&](int x, int y, int w, int h) {
+    // 管口
+    tft.fillRect(x - 6, y, w + 12, 10, PIPE);
+    tft.drawRect(x - 6, y, w + 12, 10, PIPE_D);
+    // 管身
+    tft.fillRect(x, y + 10, w, h - 10, PIPE);
+    tft.drawRect(x, y + 10, w, h - 10, PIPE_D);
+    // 高光
+    tft.fillRect(x + 3, y + 12, 4, h - 14, tft.color565(120, 255, 170));
+  };
+
+  // 云朵
+  drawCloud(18, 18, 1);
+  drawCloud(138, 34, 1);
+
+  // 上方装饰：金币 + 砖块/问号块（简化为砖块）
+  drawCoin(36, 74, 8);
+  drawCoin(204, 70, 7);
+  drawBrick(92, 58, 2);   // 20x16
+  drawBrick(132, 58, 2);
+
+  // 地面（底部 52px）
+  const int groundY = 188;
+  tft.fillRect(0, groundY, 240, 240 - groundY, GROUND);
+  // 草地顶边
+  tft.fillRect(0, groundY, 240, 6, GRASS);
+  // 地面纹理
+  for (int x = 0; x < 240; x += 16) {
+    tft.drawFastVLine(x, groundY + 8, 240 - groundY - 8, GROUND_D);
+  }
+  for (int y = groundY + 10; y < 240; y += 14) {
+    tft.drawFastHLine(0, y, 240, GROUND_D);
+  }
+
+  // 水管（右下角）
+  drawPipe(190, groundY - 36, 36, 74);
 
   char timeStr[6];
   sprintf(timeStr, "%02d:%02d", timeinfo.tm_hour, timeinfo.tm_min);
 
-  tft.setTextColor(ST77XX_CYAN);
+  // 时间：像素风边框字（白字+黑描边）
   tft.setTextSize(5);
   int16_t x1, y1; uint16_t w, h;
   tft.getTextBounds(timeStr, 0, 0, &x1, &y1, &w, &h);
-  tft.setCursor((240 - w) / 2, 75);
+  int tx = (240 - w) / 2;
+  int ty = 78;
+  tft.setTextColor(ST77XX_BLACK);
+  tft.setCursor(tx + 2, ty + 2);
+  tft.print(timeStr);
+  tft.setTextColor(ST77XX_WHITE);
+  tft.setCursor(tx, ty);
   tft.print(timeStr);
 
   char dateStr[32];
   sprintf(dateStr, "%04d年%02d月%02d日", timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday);
   u8g2.setFont(u8g2_font_wqy16_t_gb2312);
+  // 避免其它页面把 fontMode(0)/背景色残留，导致中文文字出现黑底
+  u8g2.setFontMode(1); // 透明背景
   u8g2.setForegroundColor(ST77XX_WHITE);
   int dw = u8g2.getUTF8Width(dateStr);
-  u8g2.setCursor((240 - dw) / 2, 156);
+  // 日期放在草地上方
+  u8g2.setCursor((240 - dw) / 2, 168);
   u8g2.print(dateStr);
 
   const char* weekdays[] = {"星期日","星期一","星期二","星期三","星期四","星期五","星期六"};
-  u8g2.setForegroundColor(ST77XX_ORANGE);
+  u8g2.setForegroundColor(ST77XX_YELLOW);
   int ww = u8g2.getUTF8Width(weekdays[timeinfo.tm_wday]);
-  u8g2.setCursor((240 - ww) / 2, 196);
+  u8g2.setCursor((240 - ww) / 2, 186);
   u8g2.print(weekdays[timeinfo.tm_wday]);
+
+  lastMinute = timeinfo.tm_min;
 }
 
 void printWrappedUTF8(String text, int x, int y, int maxWidth) {
@@ -176,12 +281,15 @@ void refreshDisplayByMode() {
 
   lastMode = displayMode;
 
-  // 过渡：背光淡出 -> 绘制新模式 -> 背光淡入
+  // 过渡：先几乎关背光，再画新模式，最后淡入——避免旧画面与新内容叠在一起造成“闪屏/鬼影”
   const int target = constrain(backlightValue, 0, 255);
-  const int dim = max(0, target / 12); // 约 8%
-  fadeBacklightMapped(target, dim, 110);
+  fadeBacklightMapped(target, 0, 100);
+  // 时钟模式会整屏 fill 天空色或黑底占位，此处不再先铺纯黑，减少背光渐亮时一帧黑闪
+  if (displayMode != 1) {
+    tft.fillScreen(ST77XX_BLACK);
+  }
   drawByModeOnce();
-  fadeBacklightMapped(dim, target, 160);
+  fadeBacklightMapped(0, target, 170);
 }
 
 static void drawClaudeBotPixelArt(int centerX, int topY, int s, uint16_t eyeColor) {
@@ -216,12 +324,11 @@ static void drawClaudeBotPixelArt(int centerX, int topY, int s, uint16_t eyeColo
   tft.fillRect(x0 + 8 * s, legY, s, legH, BOT);
 }
 
-void drawBootSplash() {
-  // 暗色底 + 橙色像素机器人 + Hello Cody
+void drawBootSplash(bool showPcSerialConnected) {
+  // 暗色底 + 橙色像素机器人 + Hello Cody（可选：PC 串口已连时在其下显示「电脑已连接」）
   const uint16_t bgDark = ST77XX_BLACK;
   tft.fillScreen(bgDark);
 
-  // 机器人 + 文案：整体居中
   const int s = 12; // 像素块大小
   const int bodyH = 6 * s;
   const int legH = 2 * s;
@@ -235,19 +342,31 @@ void drawBootSplash() {
   uint16_t w, h;
   tft.getTextBounds(msg, 0, 0, &x1, &y1, &w, &h);
 
-  const int gap = 6; // logo 与字的间距（越小越贴近）
-  const int groupH = botH + gap + (int)h;
+  const int gap = 6; // logo 与 Hello 行间距
+  // 第二行中文与间距（与 Logo 一并参与垂直居中）
+  const int pcExtra = showPcSerialConnected ? (10 + 18) : 0;
+  const int groupH = botH + gap + (int)h + pcExtra;
   const int topY = (240 - groupH) / 2;
 
   drawClaudeBotPixelArt(120, topY, s, ST77XX_BLACK);
 
-  // “加粗”效果：叠印两次（向右偏移 1px）
   int textX = (240 - (int)w) / 2;
   int textY = topY + botH + gap;
   tft.setCursor(textX, textY);
   tft.print(msg);
   tft.setCursor(textX + 1, textY);
   tft.print(msg);
+
+  if (showPcSerialConnected) {
+    u8g2.setFont(u8g2_font_wqy16_t_gb2312);
+    u8g2.setFontMode(1);
+    u8g2.setForegroundColor(ST77XX_GREEN);
+    const char* hint = "电脑已连接";
+    int hw = u8g2.getUTF8Width(hint);
+    const int hintBaseY = textY + (int)h + 10 + 16;
+    u8g2.setCursor((240 - hw) / 2, hintBaseY);
+    u8g2.print(hint);
+  }
 }
 
 static void drawKeyValueLine(int y, const String& key, const String& val, uint16_t keyColor, uint16_t valColor) {
@@ -260,147 +379,474 @@ static void drawKeyValueLine(int y, const String& key, const String& val, uint16
   u8g2.print(val);
 }
 
-void drawSystemInfoPage() {
-  tft.fillScreen(ST77XX_BLACK);
+/** 主设置列表是否已整屏绘制；子页/其它全屏界面会将其置为 false，便于返回时重画 */
+static bool g_settingsMenuListValid = false;
+static int g_settingsMenuLastSelected = -1;
 
+/** 长按进度增量绘制状态（仅刷新新增浅绿条，减轻闪屏） */
+static int16_t s_lpDeltaLastFw = -1;
+static uint32_t s_lpDeltaCellKey = 0xFFFFFFFFu;
+static unsigned long s_lpDeltaLastTextMs = 0;
+
+static void resetLongPressProgressDeltaState() {
+  s_lpDeltaLastFw = -1;
+  s_lpDeltaCellKey = 0xFFFFFFFFu;
+  s_lpDeltaLastTextMs = 0;
+}
+
+void invalidateSettingsMenuLayout() {
+  g_settingsMenuListValid = false;
+  g_settingsMenuLastSelected = -1;
+  resetLongPressProgressDeltaState();
+}
+
+static void drawSettingsHeader(const char* title) {
+  invalidateSettingsMenuLayout();
+  tft.fillScreen(ST77XX_BLACK);
   u8g2.setFont(u8g2_font_wqy16_t_gb2312);
+  u8g2.setFontMode(1);
   u8g2.setForegroundColor(ST77XX_CYAN);
   u8g2.setCursor(10, 24);
-  u8g2.print("系统信息");
-  u8g2.setForegroundColor(0xAD55);
-  u8g2.setCursor(140, 24);
-  u8g2.print("V");
-  u8g2.print(CURRENT_VERSION);
-
+  u8g2.print(title);
   tft.drawFastHLine(10, 32, 220, 0x4208);
+}
+
+static void drawMenuItem(int y, const char* text, bool selected) {
+  const uint16_t bg = selected ? tft.color565(60, 140, 255) : ST77XX_BLACK;
+  const uint16_t fg = selected ? ST77XX_BLACK : ST77XX_WHITE;
+  tft.fillRect(10, y - 18, 220, 26, bg);
+  u8g2.setFont(u8g2_font_wqy16_t_gb2312);
+  u8g2.setFontMode(1);
+  u8g2.setForegroundColor(fg);
+  u8g2.setCursor(18, y);
+  u8g2.print(text);
+}
+
+/** 与 drawMenuItem 一致；长按进度时底色=选中蓝，左侧浅绿矩形为进度（直角） */
+static void drawMenuItemWithLongPressProgress(int y, const char* text, bool selected, float progress01) {
+  const int bx = 10;
+  const int by = y - 18;
+  const int bw = 220;
+  const int bh = 26;
+  const uint16_t selBlue = tft.color565(60, 140, 255);
+  const uint16_t progLightGreen = tft.color565(130, 235, 170);
+
+  if (progress01 < 0.f) progress01 = 0.f;
+  if (progress01 > 1.f) progress01 = 1.f;
+
+  if (!selected) {
+    resetLongPressProgressDeltaState();
+    tft.fillRect(bx, by, bw, bh, ST77XX_BLACK);
+    u8g2.setFont(u8g2_font_wqy16_t_gb2312);
+    u8g2.setFontMode(1);
+    u8g2.setForegroundColor(ST77XX_WHITE);
+    u8g2.setCursor(18, y);
+    u8g2.print(text);
+    return;
+  }
+
+  if (progress01 <= 0.f) {
+    resetLongPressProgressDeltaState();
+    tft.fillRect(bx, by, bw, bh, selBlue);
+    u8g2.setFont(u8g2_font_wqy16_t_gb2312);
+    u8g2.setFontMode(1);
+    u8g2.setForegroundColor(ST77XX_BLACK);
+    u8g2.setCursor(18, y);
+    u8g2.print(text);
+    return;
+  }
+
+  const int fw = (int)((float)bw * progress01 + 0.5f);
+  const uint32_t cellKey = (uint32_t)(uint16_t)by << 16 | (uint16_t)bx;
+  const unsigned long nowMs = millis();
+  if (cellKey != s_lpDeltaCellKey) {
+    s_lpDeltaCellKey = cellKey;
+    s_lpDeltaLastFw = -1;
+  }
+
+  auto drawLabel = [&]() {
+    u8g2.setFont(u8g2_font_wqy16_t_gb2312);
+    u8g2.setFontMode(1);
+    u8g2.setForegroundColor(ST77XX_BLACK);
+    u8g2.setCursor(18, y);
+    u8g2.print(text);
+  };
+
+  if (s_lpDeltaLastFw < 0) {
+    tft.fillRect(bx, by, bw, bh, selBlue);
+    if (fw >= bw) {
+      tft.fillRect(bx, by, bw, bh, progLightGreen);
+    } else if (fw > 0) {
+      tft.fillRect(bx, by, fw, bh, progLightGreen);
+    }
+    s_lpDeltaLastFw = (int16_t)fw;
+    s_lpDeltaLastTextMs = nowMs;
+    drawLabel();
+    return;
+  }
+
+  if (fw == s_lpDeltaLastFw) {
+    return;
+  }
+
+  if (fw < s_lpDeltaLastFw) {
+    tft.fillRect(bx, by, bw, bh, selBlue);
+    if (fw >= bw) {
+      tft.fillRect(bx, by, bw, bh, progLightGreen);
+    } else if (fw > 0) {
+      tft.fillRect(bx, by, fw, bh, progLightGreen);
+    }
+    s_lpDeltaLastFw = (int16_t)fw;
+    s_lpDeltaLastTextMs = nowMs;
+    drawLabel();
+    return;
+  }
+
+  const int prevFw = (int)s_lpDeltaLastFw;
+  tft.fillRect(bx + prevFw, by, fw - prevFw, bh, progLightGreen);
+  s_lpDeltaLastFw = (int16_t)fw;
+
+  const int textStartX = 18;
+  const bool overlapsText = (bx + fw) > textStartX;
+  const bool crossedIntoText = (bx + prevFw) <= textStartX && (bx + fw) > textStartX;
+  if (overlapsText && (crossedIntoText || (int)(nowMs - s_lpDeltaLastTextMs) >= 48 || fw >= bw)) {
+    s_lpDeltaLastTextMs = nowMs;
+    drawLabel();
+  }
+}
+
+void drawSettingsMenuLongPressProgress(int selected, float progress01) {
+  static const char* items[] = {"退出", "网络状态", "配网设置", "软件更新", "抹掉所有内容和设置", "关于本机"};
+  constexpr int kN = 6;
+  if (selected < 0) selected = 0;
+  if (selected > kN - 1) selected = kN - 1;
+  if (!g_settingsMenuListValid) return;
+  const int firstY = 44;
+  const int lineStep = 30;
+  // 只重绘当前选中行，避免六行文字每帧重画导致闪屏
+  const int y = firstY + selected * lineStep;
+  drawMenuItemWithLongPressProgress(y, items[selected], true, progress01);
+}
+
+void drawSettingsSoftwareUpdateLongPressProgress(int subSelected, float progress01) {
+  if (subSelected < 0) subSelected = 0;
+  if (subSelected > 1) subSelected = 1;
+  // 只重绘当前选中的按钮，另一枚保持 drawSettingsSoftwareUpdate 已绘制内容
+  if (subSelected == 0) {
+    drawMenuItemWithLongPressProgress(168, "返回", true, progress01);
+  } else {
+    drawMenuItemWithLongPressProgress(198, "开始更新", true, progress01);
+  }
+}
+
+static void drawBottomHint(const char* leftHint, const char* rightHint) {
+  tft.fillRect(0, 214, 240, 26, ST77XX_BLACK);
+  u8g2.setFont(u8g2_font_wqy16_t_gb2312);
+  u8g2.setFontMode(1);
+  u8g2.setForegroundColor(0xAD55);
+  u8g2.setCursor(10, 236);
+  u8g2.print(leftHint ? leftHint : "短按切换");
+  int w = u8g2.getUTF8Width(rightHint ? rightHint : "长按执行");
+  u8g2.setCursor(240 - 10 - w, 236);
+  u8g2.print(rightHint ? rightHint : "长按执行");
+}
+
+void drawPcSerialToastOverlay() {
+  tft.fillRect(0, 208, 240, 32, ST77XX_BLACK);
+  tft.drawFastHLine(0, 208, 240, 0x4208);
+  u8g2.setFont(u8g2_font_wqy16_t_gb2312);
+  u8g2.setFontMode(1);
+  u8g2.setForegroundColor(ST77XX_GREEN);
+  const char* msg = "电脑已连接";
+  int w = u8g2.getUTF8Width(msg);
+  u8g2.setCursor((240 - w) / 2, 230);
+  u8g2.print(msg);
+}
+
+void drawSettingsMenu(int selected) {
+  static const char* items[] = {"退出", "网络状态", "配网设置", "软件更新", "抹掉所有内容和设置", "关于本机"};
+  constexpr int kN = 6;
+  if (selected < 0) selected = 0;
+  if (selected > kN - 1) selected = kN - 1;
+  const int firstY = 44;
+  const int lineStep = 30;
+
+  if (!g_settingsMenuListValid) {
+    tft.fillScreen(ST77XX_BLACK);
+    tft.drawFastHLine(10, 34, 220, 0x4208);
+    for (int i = 0; i < kN; i++) {
+      drawMenuItem(firstY + i * lineStep, items[i], selected == i);
+    }
+    drawBottomHint("短按切换", "长按执行");
+    g_settingsMenuLastSelected = selected;
+    g_settingsMenuListValid = true;
+    return;
+  }
+
+  if (g_settingsMenuLastSelected != selected) {
+    const int prev = g_settingsMenuLastSelected;
+    if (prev >= 0 && prev < kN) {
+      drawMenuItem(firstY + prev * lineStep, items[prev], false);
+    }
+    drawMenuItem(firstY + selected * lineStep, items[selected], true);
+    g_settingsMenuLastSelected = selected;
+  }
+}
+
+void drawSettingsNetStatus(int selected) {
+  drawSettingsHeader("网络状态");
 
   const bool connected = (WiFi.status() == WL_CONNECTED);
   const String ssid = connected ? WiFi.SSID() : String("未连接");
   const String ip = connected ? WiFi.localIP().toString() : String("--");
+  const int rssi = connected ? WiFi.RSSI() : 0;
 
-  size_t total = LittleFS.totalBytes();
-  size_t used = LittleFS.usedBytes();
-  size_t free = (total > used) ? (total - used) : 0;
+  u8g2.setFont(u8g2_font_wqy16_t_gb2312);
+  u8g2.setFontMode(1);
 
   u8g2.setForegroundColor(ST77XX_WHITE);
-  u8g2.setCursor(10, 52);
-  u8g2.print("WiFi");
+  u8g2.setCursor(10, 66);
+  u8g2.print("状态: ");
   u8g2.setForegroundColor(connected ? ST77XX_GREEN : ST77XX_RED);
-  u8g2.setCursor(70, 52);
   u8g2.print(connected ? "已连接" : "未连接");
 
   u8g2.setForegroundColor(ST77XX_ORANGE);
-  u8g2.setCursor(10, 76);
+  u8g2.setCursor(10, 90);
   u8g2.print("SSID:");
   u8g2.setForegroundColor(ST77XX_WHITE);
-  u8g2.setCursor(70, 76);
+  u8g2.setCursor(70, 90);
   u8g2.print(ssid);
 
   u8g2.setForegroundColor(ST77XX_ORANGE);
-  u8g2.setCursor(10, 100);
+  u8g2.setCursor(10, 114);
   u8g2.print("IP:");
   u8g2.setForegroundColor(ST77XX_WHITE);
-  u8g2.setCursor(70, 100);
+  u8g2.setCursor(70, 114);
   u8g2.print(ip);
 
   u8g2.setForegroundColor(ST77XX_ORANGE);
-  u8g2.setCursor(10, 124);
-  u8g2.print("FS:");
+  u8g2.setCursor(10, 138);
+  u8g2.print("RSSI:");
   u8g2.setForegroundColor(ST77XX_WHITE);
-  u8g2.setCursor(70, 124);
+  u8g2.setCursor(70, 138);
+  if (connected) {
+    u8g2.print(String(rssi));
+    u8g2.print(" dBm");
+  } else {
+    u8g2.print("--");
+  }
+
+  u8g2.setForegroundColor(0xAD55);
+  if (connected) {
+    u8g2.setCursor(10, 162);
+    u8g2.print("相同网络下，用浏览器访问");
+    u8g2.setCursor(10, 186);
+    u8g2.print("上方 IP 可进入管理端");
+  } else {
+    u8g2.setCursor(10, 162);
+    u8g2.print("请前往「配网设置」");
+    u8g2.setCursor(10, 186);
+    u8g2.print("连接 WiFi");
+  }
+
+  // 子页面选项：仅“返回” -> 不展示按钮，仅提示“短按返回”
+  (void)selected;
+  tft.fillRect(0, 214, 240, 26, ST77XX_BLACK);
+  u8g2.setFont(u8g2_font_wqy16_t_gb2312);
+  u8g2.setFontMode(1);
+  u8g2.setForegroundColor(0xAD55);
+  u8g2.setCursor(10, 236);
+  u8g2.print("短按返回");
+}
+
+void drawSettingsSoftwareUpdate(int selected, const char* curVer, const char* latestVer, bool available, const char* hint) {
+  drawSettingsHeader("软件更新");
+
+  u8g2.setFont(u8g2_font_wqy16_t_gb2312);
+  u8g2.setFontMode(1);
+  u8g2.setForegroundColor(ST77XX_WHITE);
+  // 右上角：当前版本
+  {
+    const char* v = curVer ? curVer : CURRENT_VERSION;
+    String vv = String("V") + v;
+    int w = u8g2.getUTF8Width(vv.c_str());
+    u8g2.setForegroundColor(0xAD55);
+    u8g2.setCursor(240 - 10 - w, 24);
+    u8g2.print(vv);
+  }
+
+  if (!hint || !hint[0]) {
+    u8g2.setForegroundColor(available ? ST77XX_GREEN : 0xAD55);
+    u8g2.setCursor(10, 66);
+    u8g2.print(available ? "发现更新，可升级" : "当前已是最新版本");
+  } else {
+    u8g2.setForegroundColor(0xAD55);
+    u8g2.setCursor(10, 66);
+    u8g2.print(hint);
+  }
+
+  // 仅在有更新时显示“最新版本号”
+  if (available && latestVer && latestVer[0]) {
+    u8g2.setForegroundColor(ST77XX_ORANGE);
+    u8g2.setCursor(10, 90);
+    u8g2.print("最新版本: ");
+    u8g2.setForegroundColor(ST77XX_WHITE);
+    u8g2.print(latestVer);
+  }
+
+  // 选项：无更新时仅“返回”；有更新时“返回/开始更新”
+  if (!available) {
+    // 仅返回：不展示按钮，仅提示“短按返回”
+    (void)selected;
+    tft.fillRect(0, 214, 240, 26, ST77XX_BLACK);
+    u8g2.setFont(u8g2_font_wqy16_t_gb2312);
+    u8g2.setFontMode(1);
+    u8g2.setForegroundColor(0xAD55);
+    u8g2.setCursor(10, 236);
+    u8g2.print("短按返回");
+  } else {
+    if (selected < 0) selected = 0;
+    if (selected > 1) selected = 1;
+    // 与主设置菜单一致的行距，避免两枚按钮挤在一起
+    drawMenuItem(168, "返回", selected == 0);
+    drawMenuItem(198, "开始更新", selected == 1);
+    drawBottomHint("短按切换", "长按执行");
+  }
+}
+
+void drawSettingsAbout(int selected) {
+  drawSettingsHeader("关于本机");
+
+  // 存储信息
+  size_t total = LittleFS.totalBytes();
+  size_t used = LittleFS.usedBytes();
+
+  u8g2.setFont(u8g2_font_wqy16_t_gb2312);
+  u8g2.setFontMode(1);
+
+  u8g2.setForegroundColor(ST77XX_ORANGE);
+  u8g2.setCursor(10, 66);
+  u8g2.print("存储信息");
+  u8g2.setForegroundColor(ST77XX_WHITE);
+  u8g2.setCursor(10, 90);
+  u8g2.print("已用 ");
   u8g2.print(String(used / 1024));
-  u8g2.print("/");
+  u8g2.print("KB / ");
   u8g2.print(String(total / 1024));
   u8g2.print("KB");
 
-  tft.drawFastHLine(10, 140, 220, 0x4208);
-
-  u8g2.setForegroundColor(ST77XX_YELLOW);
-  u8g2.setCursor(10, 162);
-  u8g2.print("可用: ");
+  // 控制板信息
+  u8g2.setForegroundColor(ST77XX_ORANGE);
+  u8g2.setCursor(10, 114);
+  u8g2.print("控制板信息");
   u8g2.setForegroundColor(ST77XX_WHITE);
-  u8g2.print(String(free / 1024));
-  u8g2.print(" KB");
+  u8g2.setCursor(10, 138);
+  u8g2.print(ESP.getChipModel());
+  u8g2.print(" rev");
+  u8g2.print(ESP.getChipRevision());
 
-  // 底部提示
+  // 屏幕信息
+  u8g2.setForegroundColor(ST77XX_ORANGE);
+  u8g2.setCursor(10, 162);
+  u8g2.print("屏幕信息");
+  u8g2.setForegroundColor(ST77XX_WHITE);
+  u8g2.setCursor(10, 186);
+  u8g2.print("ST7789 240x240");
+
+  // 左下角提示：短按返回
+  tft.fillRect(0, 214, 240, 26, ST77XX_BLACK);
   u8g2.setForegroundColor(0xAD55);
-  u8g2.setCursor(10, 238);
-  u8g2.print("短按返回  长按格式化");
+  u8g2.setCursor(10, 236);
+  u8g2.print("短按返回");
 }
 
-void drawHoldProgress(const char* title, const char* hint, int secondsHeld, int totalSeconds) {
-  // secondsHeld 从 0 递增到 totalSeconds
-  if (secondsHeld < 0) secondsHeld = 0;
-  if (secondsHeld > totalSeconds) secondsHeld = totalSeconds;
+static bool g_eraseHoldStaticDrawn = false;
+/** 进度条已填充宽度；<0 表示尚未初始化条内区域 */
+static int g_eraseHoldLastFillW = -1;
+/** 上次已绘制的显示用千分比（分桶+节流，避免文字狂刷闪烁） */
+static int g_eraseHoldLastDisplayTenths = -1;
 
-  // 降闪烁：只在标题变化/首次进入时整屏绘制，其余仅局部刷新
-  static String lastTitle = "";
-  static int lastPct = -1;
-  static int lastRemain = -1;
-  static bool frameDrawn = false;
+void drawHoldProgressReset() {
+  g_eraseHoldStaticDrawn = false;
+  g_eraseHoldLastFillW = -1;
+  g_eraseHoldLastDisplayTenths = -1;
+  invalidateSettingsMenuLayout();
+}
 
-  String ttl = title ? String(title) : String("长按");
-  if (!frameDrawn || ttl != lastTitle || secondsHeld == 0) {
-    frameDrawn = true;
-    lastTitle = ttl;
-    lastPct = -1;
-    lastRemain = -1;
+void drawSettingsEraseHoldProgress(uint32_t elapsedMs, uint32_t totalMs) {
+  if (totalMs == 0) totalMs = 1;
 
+  if (!g_eraseHoldStaticDrawn) {
+    g_eraseHoldStaticDrawn = true;
     tft.fillScreen(ST77XX_BLACK);
     u8g2.setFont(u8g2_font_wqy16_t_gb2312);
+    u8g2.setFontMode(1);
 
     u8g2.setForegroundColor(ST77XX_ORANGE);
-    u8g2.setCursor(10, 60);
-    u8g2.print(ttl);
-
-    // 进度条框架
-    tft.drawRect(10, 130, 220, 16, 0xFFFF);
+    u8g2.setCursor(10, 22);
+    u8g2.print("抹掉所有内容和设置");
 
     u8g2.setForegroundColor(0xAD55);
-    u8g2.setCursor(10, 230);
+    u8g2.setCursor(10, 42);
+    u8g2.print("将清除以下项：");
+
+    u8g2.setForegroundColor(ST77XX_WHITE);
+    u8g2.setCursor(10, 62);
+    u8g2.print("· WiFi 与已保存密码");
+    u8g2.setCursor(10, 82);
+    u8g2.print("· 图片、笔记与缓存");
+    u8g2.setCursor(10, 102);
+    u8g2.print("· 轮播、模式与亮度等");
+
+    tft.drawRect(10, 128, 220, 16, 0xFFFF);
+    // 条内先铺黑，之后只向右增量铺绿，避免每帧整段清屏闪烁
+    tft.fillRect(11, 129, 218, 14, ST77XX_BLACK);
+
+    u8g2.setForegroundColor(0xAD55);
+    u8g2.setCursor(10, 228);
     u8g2.print("松开取消");
+
+    g_eraseHoldLastFillW = 0;
+    g_eraseHoldLastDisplayTenths = -1;
   }
 
-  u8g2.setFont(u8g2_font_wqy16_t_gb2312);
+  uint32_t e = elapsedMs;
+  if (e > totalMs) e = totalMs;
+  const int fillW = (int)((uint32_t)218 * e / totalMs);
 
-  // 更新提示行（清理区域再重绘）
-  tft.fillRect(0, 74, 240, 32, ST77XX_BLACK);
-  u8g2.setForegroundColor(ST77XX_WHITE);
-  u8g2.setCursor(10, 92);
-  if (secondsHeld < 2) {
-    u8g2.print(hint ? hint : "继续按住...");
-  } else {
-    int remain = totalSeconds - secondsHeld;
-    if (remain != lastRemain) lastRemain = remain;
-    u8g2.print("剩余 ");
-    u8g2.print(remain);
-    u8g2.print(" 秒");
-  }
-
-  // 更新进度条与百分比（局部刷新）
-  if (secondsHeld >= 2) {
-    int p = (secondsHeld * 100) / totalSeconds;
-    if (p != lastPct) {
-      lastPct = p;
-      // 清空条内区域
-      tft.fillRect(11, 131, 218, 14, ST77XX_BLACK);
-      int fill = (218 * p) / 100;
-      if (fill < 0) fill = 0;
-      if (fill > 218) fill = 218;
-      tft.fillRect(11, 131, fill, 14, 0x07E0);
-
-      tft.fillRect(0, 154, 240, 24, ST77XX_BLACK);
-      u8g2.setForegroundColor(ST77XX_CYAN);
-      u8g2.setCursor(10, 170);
-      u8g2.print("进度 ");
-      u8g2.print(p);
-      u8g2.print("%");
+  // 增量绘制进度条（仅扩展或回缩差值，不整段清空）
+  if (fillW != g_eraseHoldLastFillW) {
+    if (fillW > g_eraseHoldLastFillW) {
+      const int x0 = 11 + g_eraseHoldLastFillW;
+      const int w = fillW - g_eraseHoldLastFillW;
+      if (w > 0) tft.fillRect(x0, 129, w, 14, 0x07E0);
+    } else if (fillW < g_eraseHoldLastFillW) {
+      const int x0 = 11 + fillW;
+      const int w = g_eraseHoldLastFillW - fillW;
+      if (w > 0) tft.fillRect(x0, 129, w, 14, ST77XX_BLACK);
     }
-  } else {
-    // 未到 2 秒：清空条内与百分比区
-    tft.fillRect(11, 131, 218, 14, ST77XX_BLACK);
-    tft.fillRect(0, 154, 240, 24, ST77XX_BLACK);
-    lastPct = -1;
+    g_eraseHoldLastFillW = fillW;
+  }
+
+  // 百分比：按时间分桶（约 100ms 一变），且只擦除文字条带，减轻全宽黑块闪烁
+  constexpr uint32_t kPercentBucketMs = 100;
+  uint32_t eb = (elapsedMs / kPercentBucketMs) * kPercentBucketMs;
+  if (eb > totalMs) eb = totalMs;
+  int displayTenths = (int)((uint32_t)1000 * eb / totalMs);
+  if (elapsedMs >= totalMs) displayTenths = 1000;
+
+  if (displayTenths != g_eraseHoldLastDisplayTenths) {
+    tft.fillRect(8, 152, 136, 24, ST77XX_BLACK);
+    u8g2.setFont(u8g2_font_wqy16_t_gb2312);
+    u8g2.setFontMode(1);
+    u8g2.setForegroundColor(ST77XX_CYAN);
+    u8g2.setCursor(10, 170);
+    u8g2.print("进度 ");
+    u8g2.print(displayTenths / 10);
+    u8g2.print(".");
+    u8g2.print(displayTenths % 10);
+    u8g2.print("%");
+    g_eraseHoldLastDisplayTenths = displayTenths;
   }
 }
 

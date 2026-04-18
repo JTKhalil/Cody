@@ -29,11 +29,14 @@
   - `sketch_apr15a/include/render/display_render.h`
   - `sketch_apr15a/src/render/display_render.cpp`
   - 功能：时钟界面、笔记排版（UTF‑8 自动换行）、按模式刷新屏幕
+  - `sketch_apr15a/include/render/expression_mode.h`
+  - `sketch_apr15a/src/render/expression_mode.cpp`
+  - 功能：表情模式（非阻塞状态机动画）、中文提示使用 U8g2 字体渲染
 
 - **存储（LittleFS）**
   - `sketch_apr15a/include/storage/image_store.h`
   - `sketch_apr15a/src/storage/image_store.cpp`
-  - 功能：图片槽位扫描、从 LittleFS 读取 RGB565 并显示、上一张/下一张逻辑
+  - 功能：图片槽位扫描、从 LittleFS 读取 RGB565 并显示、轮播下一张切换逻辑
 
   - `sketch_apr15a/include/storage/note_store.h`
   - `sketch_apr15a/src/storage/note_store.cpp`
@@ -67,10 +70,14 @@
 
 ## 设备端功能清单
 
-- **三种显示模式**
+- **四种显示模式**
   - **图片模式**：最多 4 个槽位，支持轮播/手动切换、支持设置轮播间隔
   - **时钟模式**：NTP 校时后显示时间/日期/星期
   - **笔记模式**：从 LittleFS 读取笔记，支持置顶与轮播
+  - **表情模式**：多种可爱动作随机播放（非阻塞），提示文字使用 U8g2 中文字体避免乱码
+
+- **模式切换过渡**
+  - 模式切换时采用背光淡出/淡入，减少闪屏
 
 - **Web 控制面板（设备端 HTTP Server）**
   - 内置页面（固件中 PROGMEM）
@@ -126,7 +133,7 @@
 ```powershell
 & "C:\Program Files\Arduino CLI\arduino-cli.exe" compile `
   --fqbn "esp32:esp32:esp32c3:CDCOnBoot=cdc,CPUFreq=160,FlashFreq=80,FlashMode=dio,FlashSize=4M,JTAGAdapter=default,PartitionScheme=min_spiffs,UploadSpeed=921600,EraseFlash=none,ZigbeeMode=default,DebugLevel=none" `
-  "d:\mochi\sketch_apr15a"
+  "d:\mochi\Cody\sketch_apr15a"
 ```
 
 ### 烧录
@@ -135,8 +142,65 @@
 & "C:\Program Files\Arduino CLI\arduino-cli.exe" upload `
   -p COM5 `
   --fqbn "esp32:esp32:esp32c3:CDCOnBoot=cdc,CPUFreq=160,FlashFreq=80,FlashMode=dio,FlashSize=4M,JTAGAdapter=default,PartitionScheme=min_spiffs,UploadSpeed=921600,EraseFlash=none,ZigbeeMode=default,DebugLevel=none" `
-  "d:\mochi\sketch_apr15a"
+  "d:\mochi\Cody\sketch_apr15a"
 ```
 
 > 提示：烧录时若提示 `port is busy`，请关闭浏览器 WebSerial/串口监视器/串口助手等占用 COM 口的软件。
+
+---
+
+## 表情模式动作清单（当前随机池）
+
+基础表情（0~15）：
+
+- 0 眨眼
+- 1 开心
+- 2 可怜巴巴
+- 3 左右张望
+- 4 右眨眼
+- 5 晕眩
+- 6 左眨眼
+- 7 害羞侧看
+- 8 思考
+- 9 注意到/震惊
+- 10 困了
+- 11 困惑
+- 12 兴奋抖动
+- 13 傲娇/不屑
+- 14 左右歪头
+- 15 睡觉（10 分钟冷却）
+
+道具/互动（16~30）：
+
+- 16 唱歌
+- 17 吹风车
+- 18 送花
+- 20 看书学习
+- 21 吃吃吃
+- 22 打游戏
+- 23 健身举铁
+- 24 拍照
+- 26 咖啡放松
+- 27 绘画
+- 29 派对
+
+新增可爱动作（31~40）：
+
+- 32 大笑
+- 33 生气
+- 34 呜呜哭
+- 35 眼里有光
+- 37 给你点赞
+- 38 夸张震惊
+- 39 眼罩睡（省电模式）
+
+已从随机池移除（仍可能保留代码但不会随机触发）：
+
+- 19 吹泡泡
+- 25 魔法
+- 28 钓鱼
+- 30 音乐律动
+- 31 爱心暴击
+- 36 挥手打招呼
+- 40 爱心雨
 

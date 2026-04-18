@@ -233,10 +233,18 @@
     let currentESPVersion = "未知";
     let port;
     let globalWriter = null;
-    let pendingSoftReboot = false;
-    let hasRebootedThisSession = false;
-    let rebootRequestedAt = 0;
-    let uptimeProbe = { active: false, step: 0, first: -1, second: -1, timer: null };
+
+    /** 连接后反复拉低 DTR/RTS（及 break），减轻主机在 open 瞬间脉冲导致的 ESP 硬复位 */
+    async function deassertSerialControlLines(serialPort) {
+        for (let i = 0; i < 12; i++) {
+            try {
+                await serialPort.setSignals({ dataTerminalReady: false, requestToSend: false, break: false });
+            } catch (e) {
+                try { await serialPort.setSignals({ dataTerminalReady: false, requestToSend: false }); } catch (e2) {}
+            }
+            await new Promise(r => setTimeout(r, 8));
+        }
+    }
 
     // --- Toast/Confirm（替代系统 alert/confirm） ---
     let toastTimer = null;
@@ -269,34 +277,10 @@
         btnOk.onclick = () => { cleanup(); if (onOk) onOk(); };
     }
 
-    function resetUptimeProbe() {
-        uptimeProbe.active = false;
-        uptimeProbe.step = 0;
-        uptimeProbe.first = -1;
-        uptimeProbe.second = -1;
-        if (uptimeProbe.timer) { clearTimeout(uptimeProbe.timer); uptimeProbe.timer = null; }
-    }
-
     function onSerialDisconnected(reason) {
         console.warn("🔌 串口已断开: " + (reason || "unknown"));
-        // 断开时绝不触发 reboot；仅清理本次会话状态
-        pendingSoftReboot = false;
-        hasRebootedThisSession = false;
-        resetUptimeProbe();
         globalWriter = null;
 
-        // 如果这是我们刚刚主动触发 reboot 导致的短暂断链，给它一点时间自动恢复
-        if (rebootRequestedAt && (Date.now() - rebootRequestedAt) < 5000) {
-            console.log("⏳ 检测到重启窗口期的断链，等待设备恢复后继续读写...");
-            setTimeout(() => {
-                try {
-                    if (port && port.readable) startReading();
-                } catch (e) {}
-            }, 1200);
-            return;
-        }
-
-        // 非重启窗口期：回到连接遮罩层
         const overlay = document.getElementById('connectOverlay');
         if (overlay) overlay.style.display = 'flex';
         const btn = document.getElementById('btnConnect');
@@ -307,14 +291,13 @@
     async function safeClosePort() {
         try {
             if (!port) return;
-            try { await port.setSignals({ dataTerminalReady: false, requestToSend: false }); } catch (e) {}
+            try { await port.setSignals({ dataTerminalReady: false, requestToSend: false, break: false }); } catch (e) {
+                try { await port.setSignals({ dataTerminalReady: false, requestToSend: false }); } catch (e2) {}
+            }
             try { await port.close(); } catch (e) {}
         } finally {
             port = null;
             globalWriter = null;
-            pendingSoftReboot = false;
-            hasRebootedThisSession = false;
-            resetUptimeProbe();
         }
     }
 
@@ -436,45 +419,20 @@ document.getElementById('btnConnect').addEventListener('click', async () => {
     try {
         port = await navigator.serial.requestPort();
         await port.open({ baudRate: 115200 });
-
-        // 连接建立后立刻拉低 DTR/RTS（某些环境刷新/重连时默认信号会导致设备硬复位）
-        try { await port.setSignals({ dataTerminalReady: false, requestToSend: false }); } catch (e) {}
-
-        // 注意：ESP32-C3 的 USB-Serial/JTAG 在部分环境下不支持/不需要 DTR/RTS 复位，
-        // 强行拉 DTR/RTS 反而可能导致“已连接但无回包”的假死。
-        // 如确实需要硬复位，可把 enableHardReset 改为 true 再试。
-        const enableHardReset = false;
-        if (enableHardReset) {
-            document.getElementById('btnConnect').innerText = "⏳ 正在唤醒设备...";
-            try {
-                await port.setSignals({ dataTerminalReady: false, requestToSend: true });
-                await new Promise(r => setTimeout(r, 100));
-                await port.setSignals({ dataTerminalReady: false, requestToSend: false });
-                await new Promise(r => setTimeout(r, 1200));
-            } catch (e) {
-                console.warn("DTR/RTS 复位失败，继续尝试通信: ", e);
-            }
-        }
+        await deassertSerialControlLines(port);
 
         globalWriter = port.writable.getWriter(); 
         document.getElementById('connectOverlay').style.display = 'none';
         console.log("✅ 串口连接成功");
         startReading();
 
-        // 两阶段 uptime 探测：
-        // - 某些环境在 open/close 串口时会触发一次“硬复位”
-        // - 如果我们再发一次软 reboot，就会出现“一次连接两次重启”
-        // 所以这里先等待串口信号稳定，再连续取两次 uptime 来判断是否已发生硬复位。
-        pendingSoftReboot = true;
-        hasRebootedThisSession = false;
-        resetUptimeProbe();
-        uptimeProbe.active = true;
-        uptimeProbe.step = 1;
-        console.log("⏳ 已开始串口会话（准备进行 uptime 双探测，判断是否需要 reboot）");
-        uptimeProbe.timer = setTimeout(() => {
-            if (!uptimeProbe.active) return;
-            sendCmd({cmd: "uptime"});
-        }, 1200);
+        // 连接后直接做基础同步与状态拉取（不发送 reboot / 不做 uptime 探测）
+        setTimeout(() => {
+            let epoch = Math.floor(Date.now() / 1000);
+            sendCmd({cmd: "sync_time", timestamp: epoch});
+            sendCmd({cmd: "wifi_status"});
+            refreshCurrentTab("0");
+        }, 300);
     } catch (e) { 
         showToast("连接失败: " + e);
         document.getElementById('btnConnect').innerText = "🔗 连 接 串 口";
@@ -537,51 +495,6 @@ document.getElementById('btnConnect').addEventListener('click', async () => {
             switch(res.cmd) {
                 case "sync_time":
                     console.log("✅ 芯片时间已被成功校准");
-                    break;
-                case "uptime":
-                    if (!pendingSoftReboot || hasRebootedThisSession || !uptimeProbe.active) break;
-
-                    const ms = (typeof res.ms === 'number') ? res.ms : -1;
-                    if (ms < 0) break;
-
-                    // step1: 记录第一次 uptime，再发第二次
-                    if (uptimeProbe.step === 1) {
-                        uptimeProbe.first = ms;
-                        uptimeProbe.step = 2;
-                        if (uptimeProbe.timer) clearTimeout(uptimeProbe.timer);
-                        uptimeProbe.timer = setTimeout(() => {
-                            if (!uptimeProbe.active) return;
-                            sendCmd({cmd: "uptime"});
-                        }, 1200);
-                        break;
-                    }
-
-                    // step2: 对比第二次 uptime，决定是否需要软重启
-                    if (uptimeProbe.step === 2) {
-                        uptimeProbe.second = ms;
-                        uptimeProbe.active = false;
-                        if (uptimeProbe.timer) { clearTimeout(uptimeProbe.timer); uptimeProbe.timer = null; }
-
-                        const a = uptimeProbe.first;
-                        const b = uptimeProbe.second;
-                        const justBooted = (b < 8000);
-                        const resetDetected = (b < a); // uptime 变小，说明两次探测间发生了重启
-
-                        pendingSoftReboot = false;
-
-                        if (justBooted || resetDetected) {
-                            console.log(`ℹ️ uptime探测: first=${a}ms second=${b}ms（疑似已硬复位），跳过软 reboot。`);
-                            let epoch = Math.floor(Date.now() / 1000);
-                            sendCmd({cmd: "sync_time", timestamp: epoch});
-                            sendCmd({cmd: "wifi_status"});
-                            refreshCurrentTab("0");
-                        } else {
-                            hasRebootedThisSession = true;
-                            rebootRequestedAt = Date.now();
-                            console.log(`🔁 uptime探测: first=${a}ms second=${b}ms（稳定），触发软 reboot 一次。`);
-                            sendCmd({cmd: "reboot"});
-                        }
-                    }
                     break;
                 case "wifi_status":
                     let st = document.getElementById('wifiStatusText');

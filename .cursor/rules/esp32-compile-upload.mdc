@@ -1,17 +1,40 @@
 ---
-description: 修改 ESP32 固件后必须重新编译并烧录
-alwaysApply: true
+description: 修改 sketch_apr15a 固件后自动编译并烧录（arduino-cli）
+globs: sketch_apr15a/**/*
+alwaysApply: false
 ---
 
-# ESP32 固件修改后的强制流程
+# ESP32 固件：改完即编译 + 烧录
 
-当本次会话**对 ESP32 固件代码有任何修改**（尤其是 `sketch_apr15a/**` 下的 `.ino/.h/.cpp/.csv`）时，在交付/结束前必须执行：
+在编辑 `sketch_apr15a/` 下任意固件相关文件（`.ino`、`.cpp`、`.h`、`.csv` 等）后，**除非用户明确说不要烧录**，须在本轮任务内亲自执行：
 
-- 先 **compile**（确认能编译通过）
-- 再 **upload**（烧录到板子）
+1. **compile** — 必须通过  
+2. **upload** — 烧录成功为止；失败则换思路重试并说明原因  
 
-## 约束
+不能只提交代码差分而不跑编译/烧录。
 
-- 不能只改代码不验证；必须以 `arduino-cli` 编译与烧录结果为准。
-- 如果烧录失败且提示端口占用（如 COM5 busy），先提示用户释放占用（浏览器 WebSerial/串口监视器等），然后继续重试烧录。
+## 命令（与仓库根 `README.md` 一致）
 
+- **arduino-cli**：`"C:\Program Files\Arduino CLI\arduino-cli.exe"`  
+- **草图目录**：与本仓库一致时为 `d:\mochi\Cody\sketch_apr15a`（按本机实际路径替换）  
+- **FQBN**：
+
+`esp32:esp32:esp32c3:CDCOnBoot=cdc,CPUFreq=160,FlashFreq=80,FlashMode=dio,FlashSize=4M,JTAGAdapter=default,PartitionScheme=min_spiffs,UploadSpeed=921600,EraseFlash=none,ZigbeeMode=default,DebugLevel=none`
+
+**编译：**
+
+```powershell
+& "C:\Program Files\Arduino CLI\arduino-cli.exe" compile --fqbn "esp32:esp32:esp32c3:CDCOnBoot=cdc,CPUFreq=160,FlashFreq=80,FlashMode=dio,FlashSize=4M,JTAGAdapter=default,PartitionScheme=min_spiffs,UploadSpeed=921600,EraseFlash=none,ZigbeeMode=default,DebugLevel=none" "d:\mochi\Cody\sketch_apr15a"
+```
+
+**烧录**（端口以 `arduino-cli board list` 为准，常见 `COM5`）：
+
+```powershell
+& "C:\Program Files\Arduino CLI\arduino-cli.exe" upload -p COM5 --fqbn "esp32:esp32:esp32c3:CDCOnBoot=cdc,CPUFreq=160,FlashFreq=80,FlashMode=dio,FlashSize=4M,JTAGAdapter=default,PartitionScheme=min_spiffs,UploadSpeed=921600,EraseFlash=none,ZigbeeMode=default,DebugLevel=none" "d:\mochi\Cody\sketch_apr15a"
+```
+
+若 **port is busy**：提示关闭 WebSerial/串口监视器等占用 COM 的软件后重试。
+
+## 例外
+
+仅改 `index.html` / 文档且未改固件；或用户写明不要编译/烧录。

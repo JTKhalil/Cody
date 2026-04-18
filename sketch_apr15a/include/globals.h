@@ -51,6 +51,8 @@ extern WebServer server;
 
 extern int lastMinute;
 extern int displayMode;
+/** 设置页是否在前台；供 HTTP 等判断是否在设置内延迟刷新主界面 */
+extern bool settingsActive;
 
 extern int imageCount;
 extern int currentImageIndex;
