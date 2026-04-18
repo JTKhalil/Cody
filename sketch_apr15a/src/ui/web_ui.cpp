@@ -220,7 +220,7 @@ const char INDEX_HTML[] PROGMEM = R"=====(
 <script>
 (function(){
     var mode=0, imgData=null, uploading=false, uploadY=0, targetUploadSlot=0;
-    var loadedThumbs = [false,false,false,false]; 
+    var loadedThumbs = [false,false,false]; 
     var editNoteIndex = -1;
     var noteCfg = {};
     
@@ -248,11 +248,11 @@ const char INDEX_HTML[] PROGMEM = R"=====(
     document.addEventListener('mousedown', markUserActive, {passive: true});
     document.addEventListener('keydown', markUserActive, {passive: true});
 
-    var slotHasImage = [false,false,false,false];
+    var slotHasImage = [false,false,false];
     var thumbQueue = [];
     var isLoadingThumb = false;
     function requestThumb(slot) {
-        if (slot < 0 || slot >= 4) return;
+        if (slot < 0 || slot >= 3) return;
         if (!slotHasImage[slot]) return;
         if (loadedThumbs[slot]) return;
         var lt = $('loading-text-'+slot);
@@ -319,8 +319,8 @@ const char INDEX_HTML[] PROGMEM = R"=====(
             var ctx = canvas.getContext('2d'), imgD = ctx.createImageData(240, 240), data = imgD.data;
             var src = new Uint8Array(buffer), j = 0;
             for(var i = 0; i < 115200; i += 2) {
-                var p = src[i] | (src[i+1] << 8); 
-                data[j++] = ((p >> 11) & 0x1F) * 8; data[j++] = ((p >> 5) & 0x3F) * 4; data[j++] = (p & 0x1F) * 8; data[j++] = 255;                    
+                var p = src[i] | (src[i+1] << 8);
+                data[j++] = ((p >> 11) & 0x1F) * 8; data[j++] = ((p >> 5) & 0x3F) * 4; data[j++] = (p & 0x1F) * 8; data[j++] = 255;
             }
             ctx.putImageData(imgD, 0, 0); loadedThumbs[slot] = true;
             if(loadTxt) loadTxt.style.display = 'none';
@@ -386,7 +386,7 @@ const char INDEX_HTML[] PROGMEM = R"=====(
 
     function initGrid() {
         var html = '';
-        for(var i=0; i<4; i++) {
+        for(var i=0; i<3; i++) {
             html += `<div class="slot-card" id="slot-card-${i}">
                 <div class="slot-number">槽位 ${i+1}</div>
                 <div id="thumb-container-${i}" class="thumb-canvas" onclick="clickSlotAction(${i})">
@@ -417,7 +417,7 @@ const char INDEX_HTML[] PROGMEM = R"=====(
 
     function refreshStatus(){
         fetch('/image_info').then(r=>r.json()).then(d=>{
-            for(var i=0; i<4; i++) {
+            for(var i=0; i<3; i++) {
                 var isHas = d.slots[i];
                 slotHasImage[i] = !!isHas;
                 var card = $('slot-card-'+i);
@@ -603,7 +603,7 @@ const char INDEX_HTML[] PROGMEM = R"=====(
         brightTimer = setTimeout(function(){ fetch('/bright?v='+val); }, 50);
     });
 
-    $('formatFSBtn').addEventListener('click',function(){ showConfirm('⚠️ 确定执行深度格式化吗？这将清除所有的图片和笔记数据，不可恢复！', ()=>{ showToast('正在深度格式化...'); fetch('/format_fs').then(r=>r.json()).then(d=>{ if(d.status=='ok'){ loadedThumbs = [false,false,false,false]; refreshStatus(); refreshSystemSpace(); showToast('格式化成功'); } }); }); });
+    $('formatFSBtn').addEventListener('click',function(){ showConfirm('⚠️ 确定执行深度格式化吗？这将清除所有的图片和笔记数据，不可恢复！', ()=>{ showToast('正在深度格式化...'); fetch('/format_fs').then(r=>r.json()).then(d=>{ if(d.status=='ok'){ loadedThumbs = [false,false,false]; refreshStatus(); refreshSystemSpace(); showToast('格式化成功'); } }); }); });
     $('resetSystemBtn').addEventListener('click',function(){ showConfirm('恢复出厂设置将清除 WiFi 配网信息并重启设备，确定吗？', ()=>{ fetch('/reset_system').then(r=>r.json()).then(d=>{ if(d.status=='ok') showToast('即将重启...'); }); }); });
     
     fetch('/get_mode').then(r=>r.json()).then(d=>{

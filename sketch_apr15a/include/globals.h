@@ -34,7 +34,7 @@
 
 // 与 .ino 中的宏保持一致
 #ifndef MAX_IMAGES
-#define MAX_IMAGES 4
+#define MAX_IMAGES 3
 #endif
 
 #ifndef DEFAULT_INTERVAL

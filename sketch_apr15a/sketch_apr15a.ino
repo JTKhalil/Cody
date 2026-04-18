@@ -22,7 +22,7 @@ const char* URL_BIN = "https://raw.githubusercontent.com/JTKhalil/claudeRobot/re
 #define TFT_RST 2
 #define TFT_BLK 3
 
-#define MAX_IMAGES 4
+#define MAX_IMAGES 3
 #define DEFAULT_INTERVAL 10
 #define TARGET_SIZE 240
 #define MAX_NOTES 50

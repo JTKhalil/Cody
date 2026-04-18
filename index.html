@@ -229,7 +229,7 @@
 </div>
 
 <script>
-    let localImageCache = {0:null, 1:null, 2:null, 3:null}; 
+    let localImageCache = {0:null, 1:null, 2:null}; 
     let currentESPVersion = "未知";
     let port;
     let globalWriter = null;
@@ -317,7 +317,7 @@
         init: function() { this.canvas.width = 240; this.canvas.height = 240; this.ctx = this.canvas.getContext('2d'); },
         
         checkNeedSync: function(slots) {
-            for(let i=0; i<4; i++) {
+            for(let i=0; i<3; i++) {
                 if (slots[i] && !localImageCache[i] && !this.queue.includes(i) && this.currentSlot !== i) {
                     this.queue.push(i);
                 }
@@ -380,7 +380,7 @@
             if (res.y !== this.y) return; 
 
             let expectedLength = res.h * 240 * 4;
-            if (!res.data || res.data.length !== expectedLength) return; 
+            if (!res.data || res.data.length !== expectedLength) return;
 
             clearTimeout(this.timeoutTimer);
             this.retries = 0;
@@ -661,7 +661,7 @@ function submitWifi() {
     
     function renderSlots(slots, currentIdx) {
         let html = '';
-        for(let i=0; i<4; i++) {
+        for(let i=0; i<3; i++) {
             let hasImg = slots[i];
             let isCur = (i === currentIdx && hasImg);
             let isSyncing = (syncEngine.currentSlot === i);
