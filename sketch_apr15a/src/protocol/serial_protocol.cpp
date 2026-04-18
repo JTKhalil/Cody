@@ -6,9 +6,17 @@
 #include "include/render/display_render.h"
 #include "include/net/ota_update.h"
 #include "include/net/system_ops.h"
+#include <Update.h>
+#include "mbedtls/base64.h"
+
+// 串口推送固件（由 PC 下载后分块写入 OTA 分区）
+static bool gOtaSerialActive = false;
+static size_t gOtaSerialTotal = 0;
+static size_t gOtaSerialWritten = 0;
 
 void processSerialCommand(const String& payload) {
-  DynamicJsonDocument doc(4096);
+  // ota_serial_chunk 单行含 ~512 字符 hex（256B）+ 键名；4096 在部分堆碎片情况下可能截断 data，导致奇数长度 → bad hex
+  DynamicJsonDocument doc(12288);
   DeserializationError error = deserializeJson(doc, payload);
   if (error) {
     Serial.print("{\"cmd\":\"error\",\"status\":\"error\",\"msg\":\"JSON Parse Error\"}");
@@ -80,7 +88,7 @@ void processSerialCommand(const String& payload) {
     return;
   }
 
-  DynamicJsonDocument resDoc(1024);
+  DynamicJsonDocument resDoc(4096);
   resDoc["cmd"] = cmd;
   resDoc["status"] = "ok";
 
@@ -296,7 +304,132 @@ void processSerialCommand(const String& payload) {
       lastNoteSwitch = millis();
       displayNoteOnScreen();
     }
+  } else if (cmd == "ota_serial_abort") {
+    if (gOtaSerialActive) {
+      Update.abort();
+      gOtaSerialActive = false;
+      gOtaSerialTotal = 0;
+      gOtaSerialWritten = 0;
+    }
+  } else if (cmd == "ota_serial_begin") {
+    if (gOtaSerialActive) {
+      Update.abort();
+      gOtaSerialActive = false;
+    }
+    size_t sz = doc["size"].as<size_t>();
+    const size_t kMaxApp = 0x1C0000;
+    if (sz < 8192 || sz > kMaxApp) {
+      resDoc["status"] = "error";
+      resDoc["msg"] = "bad size";
+    } else {
+      Update.abort();
+      if (!Update.begin(sz, U_FLASH)) {
+        resDoc["status"] = "error";
+        resDoc["msg"] = Update.errorString();
+      } else {
+        gOtaSerialActive = true;
+        gOtaSerialTotal = sz;
+        gOtaSerialWritten = 0;
+        resDoc["max_chunk"] = 512;
+        // PC 若识别到此字段则走 Base64，单行更短、避免 hex 奇数位/截断问题
+        resDoc["enc"] = "b64";
+      }
+    }
+  } else if (cmd == "ota_serial_chunk") {
+    if (!gOtaSerialActive) {
+      resDoc["status"] = "error";
+      resDoc["msg"] = "not in OTA";
+    } else {
+      uint8_t buf[512];
+      size_t nbytes = 0;
+      bool havePayload = false;
+
+      if (doc.containsKey("b64")) {
+        String b64 = doc["b64"].as<String>();
+        if (b64.length() == 0) {
+          resDoc["status"] = "error";
+          resDoc["msg"] = "empty b64";
+        } else {
+          size_t olen = 0;
+          int br = mbedtls_base64_decode(buf, sizeof(buf), &olen,
+                                          (const unsigned char*)b64.c_str(),
+                                          b64.length());
+          if (br != 0) {
+            resDoc["status"] = "error";
+            resDoc["msg"] = "bad b64";
+          } else if (olen == 0 || olen > 512) {
+            resDoc["status"] = "error";
+            resDoc["msg"] = olen > 512 ? "chunk too big" : "empty chunk";
+          } else {
+            nbytes = olen;
+            havePayload = true;
+          }
+        }
+      } else {
+        String hexData = doc["data"].as<String>();
+        if (hexData.length() == 0 || (hexData.length() % 2) != 0) {
+          resDoc["status"] = "error";
+          resDoc["msg"] = String("bad hex len=") + String((unsigned int)hexData.length());
+        } else {
+          nbytes = hexData.length() / 2;
+          if (nbytes > 512) {
+            resDoc["status"] = "error";
+            resDoc["msg"] = "chunk too big";
+          } else {
+            const char* h = hexData.c_str();
+            for (size_t i = 0; i < nbytes; i++) {
+              buf[i] = (charToHex(h[i * 2]) << 4) | charToHex(h[i * 2 + 1]);
+            }
+            havePayload = true;
+          }
+        }
+      }
+
+      if (havePayload) {
+        if (gOtaSerialWritten + nbytes > gOtaSerialTotal) {
+          Update.abort();
+          gOtaSerialActive = false;
+          resDoc["status"] = "error";
+          resDoc["msg"] = "overflow";
+        } else {
+          size_t w = Update.write(buf, nbytes);
+          if (w != nbytes) {
+            Update.abort();
+            gOtaSerialActive = false;
+            resDoc["status"] = "error";
+            resDoc["msg"] = "write fail";
+          } else {
+            gOtaSerialWritten += w;
+            resDoc["written"] = (uint32_t)gOtaSerialWritten;
+            resDoc["total"] = (uint32_t)gOtaSerialTotal;
+          }
+        }
+      }
+    }
+  } else if (cmd == "ota_serial_finish") {
+    if (!gOtaSerialActive) {
+      resDoc["status"] = "error";
+      resDoc["msg"] = "not in OTA";
+    } else if (gOtaSerialWritten != gOtaSerialTotal) {
+      Update.abort();
+      gOtaSerialActive = false;
+      resDoc["status"] = "error";
+      resDoc["msg"] = "incomplete";
+    } else {
+      if (!Update.end(true)) {
+        resDoc["status"] = "error";
+        resDoc["msg"] = Update.errorString();
+        gOtaSerialActive = false;
+      } else {
+        gOtaSerialActive = false;
+        Serial.println("{\"cmd\":\"ota_serial_finish\",\"status\":\"ok\"}");
+        delay(500);
+        ESP.restart();
+        return;
+      }
+    }
   } else if (cmd == "ota_info") {
+    // 版本比对与固件下载由 PC 完成；设备只回报本机版本号
     resDoc["current"] = CURRENT_VERSION;
   } else if (cmd == "do_update") {
     Serial.println("{\"cmd\":\"do_update\",\"status\":\"ok\"}");
