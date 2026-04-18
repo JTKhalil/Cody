@@ -659,7 +659,71 @@ void drawSettingsNetStatus(int selected) {
   u8g2.print("短按返回");
 }
 
-void drawSettingsSoftwareUpdate(int selected, const char* curVer, const char* latestVer, bool available, const char* hint) {
+static int utf8FirstCharLen(uint8_t c) {
+  if ((c & 0x80) == 0) return 1;
+  if ((c & 0xE0) == 0xC0) return 2;
+  if ((c & 0xF0) == 0xE0) return 3;
+  if ((c & 0xF8) == 0xF0) return 4;
+  return 1;
+}
+
+/** 在软件更新页绘制远端 version.txt 正文（wqy12，较标题小一号；自动换行，y 为 u8g2 基线） */
+static void drawSoftwareUpdateNotesWrapped(int x, int& y, int yMax, const char* utf8) {
+  if (!utf8 || !utf8[0]) return;
+  String rest(utf8);
+  rest.trim();
+  if (rest.length() == 0) return;
+
+  // 较 wqy16 小一号；使用 chinese3 子集以控制 Flash（全 gb2312 会撑爆 OTA 分区）
+  u8g2.setFont(u8g2_font_wqy12_t_chinese3);
+  u8g2.setFontMode(1);
+  const int maxW = 220;
+  const int lineStep = 14;
+
+  while (rest.length() > 0) {
+    if (y > yMax) break;
+    int nl = rest.indexOf('\n');
+    String segment = (nl >= 0) ? rest.substring(0, nl) : rest;
+    if (nl >= 0) {
+      rest = rest.substring(nl + 1);
+    } else {
+      rest = "";
+    }
+    segment.trim();
+    while (segment.length() > 0) {
+      if (y > yMax) break;
+      int n = segment.length();
+      int bi = 0;
+      int lastFit = 0;
+      while (bi < n) {
+        int adv = utf8FirstCharLen((uint8_t)segment[bi]);
+        if (bi + adv > n) adv = n - bi;
+        String trial = segment.substring(0, bi + adv);
+        if (u8g2.getUTF8Width(trial.c_str()) <= maxW) {
+          lastFit = bi + adv;
+          bi += adv;
+        } else {
+          break;
+        }
+      }
+      if (lastFit == 0) {
+        int adv = utf8FirstCharLen((uint8_t)segment[0]);
+        if (adv > n) adv = n;
+        lastFit = adv;
+      }
+      String line = segment.substring(0, lastFit);
+      segment = segment.substring(lastFit);
+      segment.trim();
+      u8g2.setForegroundColor(ST77XX_WHITE);
+      u8g2.setCursor(x, y);
+      u8g2.print(line);
+      y += lineStep;
+    }
+  }
+}
+
+void drawSettingsSoftwareUpdate(int selected, const char* curVer, const char* latestVer, bool available, const char* hint,
+                                const char* updateNotes) {
   drawSettingsHeader("软件更新");
 
   u8g2.setFont(u8g2_font_wqy16_t_gb2312);
@@ -675,23 +739,43 @@ void drawSettingsSoftwareUpdate(int selected, const char* curVer, const char* la
     u8g2.print(vv);
   }
 
+  const bool showDetail = updateNotes && updateNotes[0] && (!hint || !hint[0]);
+
+  int bodyStartY = 86;
+
   if (!hint || !hint[0]) {
-    u8g2.setForegroundColor(available ? ST77XX_GREEN : 0xAD55);
-    u8g2.setCursor(10, 66);
-    u8g2.print(available ? "发现更新，可升级" : "当前已是最新版本");
+    u8g2.setFont(u8g2_font_wqy16_t_gb2312);
+    if (available && latestVer && latestVer[0]) {
+      String head = String("发现更新，可升级  V") + latestVer;
+      u8g2.setForegroundColor(ST77XX_GREEN);
+      if (u8g2.getUTF8Width(head.c_str()) <= 220) {
+        u8g2.setCursor(10, 66);
+        u8g2.print(head);
+        bodyStartY = 86;
+      } else {
+        u8g2.setCursor(10, 66);
+        u8g2.print("发现更新，可升级");
+        String vOnly = String("V") + latestVer;
+        u8g2.setForegroundColor(ST77XX_GREEN);
+        u8g2.setCursor(10, 86);
+        u8g2.print(vOnly);
+        bodyStartY = 106;
+      }
+    } else {
+      u8g2.setForegroundColor(0xAD55);
+      u8g2.setCursor(10, 66);
+      u8g2.print("当前已是最新版本");
+      bodyStartY = 86;
+    }
   } else {
     u8g2.setForegroundColor(0xAD55);
     u8g2.setCursor(10, 66);
     u8g2.print(hint);
   }
 
-  // 仅在有更新时显示“最新版本号”
-  if (available && latestVer && latestVer[0]) {
-    u8g2.setForegroundColor(ST77XX_ORANGE);
-    u8g2.setCursor(10, 90);
-    u8g2.print("最新版本: ");
-    u8g2.setForegroundColor(ST77XX_WHITE);
-    u8g2.print(latestVer);
+  if (showDetail) {
+    int bodyY = bodyStartY;
+    drawSoftwareUpdateNotesWrapped(10, bodyY, 158, updateNotes);
   }
 
   // 选项：无更新时仅“返回”；有更新时“返回/开始更新”

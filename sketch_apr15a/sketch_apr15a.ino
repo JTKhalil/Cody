@@ -329,7 +329,8 @@ static void settingsShowCurrentPage() {
   else if (settingsPage == SET_PAGE_SOFT_UPDATE) {
     drawSettingsSoftwareUpdate(settingsSubSelected, CURRENT_VERSION,
                                settingsLatestVer.c_str(), settingsUpdateAvailable,
-                               settingsSoftUpdateHintForDraw());
+                               settingsSoftUpdateHintForDraw(),
+                               settingsNotes.c_str());
   }
   else if (settingsPage == SET_PAGE_ABOUT) drawSettingsAbout(settingsSubSelected);
 }
@@ -416,7 +417,8 @@ static void handleButtons() {
             else if (settingsPage == SET_PAGE_SOFT_UPDATE) {
               drawSettingsSoftwareUpdate(settingsSubSelected, CURRENT_VERSION,
                                          settingsLatestVer.c_str(), settingsUpdateAvailable,
-                                         settingsSoftUpdateHintForDraw());
+                                         settingsSoftUpdateHintForDraw(),
+                                         settingsNotes.c_str());
             } else if (settingsPage == SET_PAGE_ABOUT) {
               drawSettingsAbout(settingsSubSelected);
             }
@@ -488,7 +490,8 @@ static void handleButtons() {
           }
           drawSettingsSoftwareUpdate(settingsSubSelected, CURRENT_VERSION,
                                      settingsLatestVer.c_str(), settingsUpdateAvailable,
-                                     settingsSoftUpdateHintForDraw());
+                                     settingsSoftUpdateHintForDraw(),
+                                     settingsNotes.c_str());
         } else if (settingsSelected == 4) {
           drawHoldProgressReset();
           settingsFormatHoldActive = true;
@@ -516,15 +519,18 @@ static void handleButtons() {
           if (WiFi.status() != WL_CONNECTED) {
             drawSettingsSoftwareUpdate(settingsSubSelected, CURRENT_VERSION,
                                        settingsLatestVer.c_str(), settingsUpdateAvailable,
-                                       "未联网，无法更新");
+                                       "未联网，无法更新",
+                                       settingsNotes.c_str());
           } else if (!settingsOtaCheckFinished || !settingsOtaFetched) {
             drawSettingsSoftwareUpdate(settingsSubSelected, CURRENT_VERSION,
                                        settingsLatestVer.c_str(), settingsUpdateAvailable,
-                                       settingsSoftUpdateHintForDraw());
+                                       settingsSoftUpdateHintForDraw(),
+                                       settingsNotes.c_str());
           } else if (!settingsUpdateAvailable) {
             drawSettingsSoftwareUpdate(settingsSubSelected, CURRENT_VERSION,
                                        settingsLatestVer.c_str(), settingsUpdateAvailable,
-                                       "");
+                                       "",
+                                       settingsNotes.c_str());
           } else {
             startOtaUpdate();
           }
@@ -672,11 +678,13 @@ void loop() {
     settingsOtaState = OTA_IDLE;
     const bool avail = settingsUpdateAvailable;
     const String latest = settingsLatestVer;
+    const String notes = settingsNotes;
     if (settingsOtaMutex) xSemaphoreGive(settingsOtaMutex);
 
     drawSettingsSoftwareUpdate(settingsSubSelected, CURRENT_VERSION,
                                latest.c_str(), avail,
-                               settingsSoftUpdateHintForDraw());
+                               settingsSoftUpdateHintForDraw(),
+                               notes.c_str());
   }
 
   // 开机 WiFi：只尝试一次，超时后停止

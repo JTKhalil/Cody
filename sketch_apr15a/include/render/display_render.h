@@ -22,7 +22,8 @@ void drawSettingsMenuLongPressProgress(int selected, float progress01);
 /** 软件更新页双按钮时：同上 */
 void drawSettingsSoftwareUpdateLongPressProgress(int subSelected, float progress01);
 void drawSettingsNetStatus(int selected);
-void drawSettingsSoftwareUpdate(int selected, const char* curVer, const char* latestVer, bool available, const char* hint);
+void drawSettingsSoftwareUpdate(int selected, const char* curVer, const char* latestVer, bool available, const char* hint,
+                                const char* updateNotes);
 void drawSettingsAbout(int selected);
 
 // 电脑已连接：底部短暂提示条（叠画在现有画面上）
