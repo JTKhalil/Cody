@@ -13,7 +13,7 @@ void handleNoteConfig() {
 void handleSetNoteConfig() {
   if (server.hasArg("pinned")) pinnedNoteIndex = server.arg("pinned").toInt();
   if (server.hasArg("slideshow")) noteSlideshowEnabled = (server.arg("slideshow") == "true");
-  if (server.hasArg("interval")) noteSwitchInterval = constrain(server.arg("interval").toInt(), 3, 300);
+  if (server.hasArg("interval")) noteSwitchInterval = constrain(server.arg("interval").toInt(), 3, 60);
   saveConfig();
   if (displayMode == 2) {
     lastNoteSwitch = millis();

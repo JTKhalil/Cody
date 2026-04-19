@@ -80,10 +80,7 @@ void handleImageDelete() {
 }
 
 void handleFormatFS() {
-  LittleFS.format();
-  currentImageIndex = 0;
-  imageCount = 0;
-  saveConfig();
+  resetUserFilesystemToDefaults();
   if (displayMode == 0) tft.fillScreen(0);
   server.send(200, "application/json", "{\"status\":\"ok\"}");
 }
@@ -231,7 +228,7 @@ void handleSetSlideshow() {
 
 void handleSetInterval() {
   if (server.hasArg("value")) {
-    switchInterval = constrain(server.arg("value").toInt(), 3, 300);
+    switchInterval = constrain(server.arg("value").toInt(), 3, 60);
     saveConfig();
     server.send(200, "application/json", "{\"status\":\"ok\"}");
     return;

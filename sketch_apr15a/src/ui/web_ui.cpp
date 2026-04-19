@@ -125,7 +125,7 @@ const char INDEX_HTML[] PROGMEM = R"=====(
             </div>
             <div style="display:flex; align-items:center; margin-top:15px;">
                 <span style="font-size:13px; margin-right:15px; color:#ccc; white-space:nowrap;">间隔: <span id="imgIntervalVal">10</span>秒</span>
-                <input type="range" id="intervalInput" min="3" max="300" style="flex:1;">
+                <input type="range" id="intervalInput" min="3" max="60" style="flex:1;">
                 <button id="saveIntervalBtn" class="btn small" style="width:auto; margin-left:15px; margin-top:0; background:#3498db;">保存设置</button>
             </div>
         </div>
@@ -147,7 +147,7 @@ const char INDEX_HTML[] PROGMEM = R"=====(
             </div>
             <div style="display:flex; align-items:center; margin-top:15px;">
                 <span style="font-size:13px; margin-right:15px; color:#ccc; white-space:nowrap;">间隔: <span id="noteIntervalVal">10</span>秒</span>
-                <input type="range" id="noteIntervalInput" min="3" max="300" style="flex:1;">
+                <input type="range" id="noteIntervalInput" min="3" max="60" style="flex:1;">
                 <button id="saveNoteIntervalBtn" class="btn small" style="width:auto; margin-left:15px; margin-top:0; background:#3498db;">保存设置</button>
             </div>
             <div style="font-size:11px; color:#888; margin-top:12px; line-height:1.4;">提示：若某条笔记被“置顶”，屏幕将强制显示该置顶笔记，轮播功能将暂时挂起。</div>
@@ -603,8 +603,8 @@ const char INDEX_HTML[] PROGMEM = R"=====(
         brightTimer = setTimeout(function(){ fetch('/bright?v='+val); }, 50);
     });
 
-    $('formatFSBtn').addEventListener('click',function(){ showConfirm('⚠️ 确定执行深度格式化吗？这将清除所有的图片和笔记数据，不可恢复！', ()=>{ showToast('正在深度格式化...'); fetch('/format_fs').then(r=>r.json()).then(d=>{ if(d.status=='ok'){ loadedThumbs = [false,false,false]; refreshStatus(); refreshSystemSpace(); showToast('格式化成功'); } }); }); });
-    $('resetSystemBtn').addEventListener('click',function(){ showConfirm('恢复出厂设置将清除 WiFi 配网信息并重启设备，确定吗？', ()=>{ fetch('/reset_system').then(r=>r.json()).then(d=>{ if(d.status=='ok') showToast('即将重启...'); }); }); });
+    $('formatFSBtn').addEventListener('click',function(){ showConfirm('深度格式化：删除全部图片与笔记，不会清除 WiFi 配网。不可恢复，确定吗？', ()=>{ showToast('正在深度格式化...'); fetch('/format_fs').then(r=>r.json()).then(d=>{ if(d.status=='ok'){ loadedThumbs = [false,false,false]; refreshStatus(); refreshSystemSpace(); showToast('格式化成功'); } }); }); });
+    $('resetSystemBtn').addEventListener('click',function(){ showConfirm('恢复出厂：删除图片与笔记，并清除 WiFi 配网，设备将重启。确定吗？', ()=>{ fetch('/reset_system').then(r=>r.json()).then(d=>{ if(d.status=='ok') showToast('即将重启...'); }); }); });
     
     fetch('/get_mode').then(r=>r.json()).then(d=>{
         mode=d.mode;

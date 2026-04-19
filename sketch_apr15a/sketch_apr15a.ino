@@ -658,17 +658,34 @@ void loop() {
 
   if (isTryingNewWifi) {
     unsigned long elapsed = millis() - wifiTryStart;
-    if (elapsed > 3000 && WiFi.status() == WL_CONNECTED && WiFi.SSID() == targetSSID) {
-      isTryingNewWifi = false; 
-    } else if (elapsed > 15000) { 
-      WiFi.disconnect();
-      delay(500); 
-      if (fallbackSSID.length() > 0) {
-        WiFi.begin(fallbackSSID.c_str(), fallbackPSK.c_str());
-      } else {
-        WiFi.begin(); 
-      }
+    String tgt = targetSSID;
+    tgt.trim();
+    if (tgt.length() == 0) {
       isTryingNewWifi = false;
+    } else {
+      bool linked = (WiFi.status() == WL_CONNECTED);
+      bool ipOk = (WiFi.localIP()[0] != 0);
+      String cur = WiFi.SSID();
+      cur.trim();
+      // SSID 一致；或驱动暂时返回空字符串（ESP 常见）；或已联网+有 IP 较久仍字符串不一致（UTF-8/编码边缘）
+      bool nameMatch = (cur.length() == 0) || (cur == tgt);
+      bool longSettle = (elapsed >= 12000 && linked && ipOk);
+
+      if (elapsed > 2000 && linked && ipOk && (nameMatch || longSettle)) {
+        emitWifiJoinResultEvent(true);
+        isTryingNewWifi = false;
+      } else if (elapsed > 28000) {
+        WiFi.disconnect();
+        delay(500);
+        if (fallbackSSID.length() > 0) {
+          WiFi.begin(fallbackSSID.c_str(), fallbackPSK.c_str());
+        } else {
+          WiFi.begin();
+        }
+        delay(800);
+        emitWifiJoinResultEvent(false);
+        isTryingNewWifi = false;
+      }
     }
   }
 

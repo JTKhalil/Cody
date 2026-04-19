@@ -1,5 +1,6 @@
 #include "include/globals.h"
 #include "include/net/system_ops.h"
+#include "include/core/config_store.h"
 #include "include/render/display_render.h"
 #include <WiFi.h>
 #include <esp_wifi.h>
@@ -63,6 +64,8 @@ void factoryResetWifiCredentials() {
 }
 
 void handleResetSystem() {
+  resetUserFilesystemToDefaults();
+  if (displayMode == 0) tft.fillScreen(ST77XX_BLACK);
   factoryResetWifiCredentials();
   server.send(200, "application/json", "{\"status\":\"ok\"}");
   delay(1000);

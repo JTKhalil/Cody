@@ -118,7 +118,7 @@
             </div>
             <div style="margin-top:15px; display:flex; align-items:center;">
                 <span style="font-size:13px; color:#aaa; width:80px;">间隔: <span id="imgIntervalVal">10</span>秒</span>
-                <input type="range" id="imgInterval" min="3" max="300" oninput="document.getElementById('imgIntervalVal').innerText=this.value" onchange="updateImgConfig()">
+                <input type="range" id="imgInterval" min="3" max="60" oninput="document.getElementById('imgIntervalVal').innerText=this.value" onchange="updateImgConfig()">
             </div>
         </div>
 
@@ -138,7 +138,7 @@
             </div>
             <div style="margin-top:15px; display:flex; align-items:center;">
                 <span style="font-size:13px; color:#aaa; width:80px;">间隔: <span id="noteIntervalVal">10</span>秒</span>
-                <input type="range" id="noteInterval" min="3" max="300" oninput="document.getElementById('noteIntervalVal').innerText=this.value" onchange="updateNoteConfig()">
+                <input type="range" id="noteInterval" min="3" max="60" oninput="document.getElementById('noteIntervalVal').innerText=this.value" onchange="updateNoteConfig()">
             </div>
             <div style="font-size:11px; color:#888; margin-top:12px; line-height:1.4;">提示：若某条笔记被“置顶”，屏幕将强制显示该置顶笔记，轮播功能将暂时挂起。</div>
         </div>

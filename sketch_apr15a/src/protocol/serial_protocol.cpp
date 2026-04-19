@@ -1,5 +1,6 @@
 #include "include/globals.h"
 #include "include/protocol/serial_protocol.h"
+#include <WiFi.h>
 #include "include/util_hex.h"
 #include "include/core/config_store.h"
 #include "include/storage/image_store.h"
@@ -8,6 +9,18 @@
 #include "include/net/system_ops.h"
 #include <Update.h>
 #include "mbedtls/base64.h"
+
+void emitWifiJoinResultEvent(bool ok) {
+  DynamicJsonDocument doc(512);
+  doc["cmd"] = "wifi_join_result";
+  doc["status"] = "ok";
+  doc["ok"] = ok;
+  doc["connected"] = (WiFi.status() == WL_CONNECTED);
+  doc["ssid"] = WiFi.SSID();
+  doc["ip"] = WiFi.localIP().toString();
+  serializeJson(doc, Serial);
+  Serial.println();
+}
 
 // 串口推送固件（由 PC 下载后分块写入 OTA 分区）
 static bool gOtaSerialActive = false;
@@ -101,6 +114,8 @@ void processSerialCommand(const String& payload) {
   } else if (cmd == "set_wifi") {
     String newSsid = doc["ssid"].as<String>();
     String newPsk = doc["psk"].as<String>();
+    newSsid.trim();
+    newPsk.trim();
 
     wifi_config_t conf;
     esp_wifi_get_config(WIFI_IF_STA, &conf);
@@ -109,6 +124,10 @@ void processSerialCommand(const String& payload) {
 
     targetSSID = newSsid;
 
+    // 开机 WiFi 超时后会 esp_wifi_stop()；仅 disconnect+begin 无法再起 STA，需先恢复栈（与 system_ops 门户一致）
+    esp_wifi_start();
+    WiFi.mode(WIFI_STA);
+    delay(50);
     WiFi.disconnect();
     delay(100);
     WiFi.begin(newSsid.c_str(), newPsk.c_str());
@@ -144,12 +163,11 @@ void processSerialCommand(const String& payload) {
     backlightValue = v;
     analogWrite(TFT_BLK, (v * v) / 255);
   } else if (cmd == "format_fs") {
-    LittleFS.format();
-    currentImageIndex = 0;
-    imageCount = 0;
-    saveConfig();
+    resetUserFilesystemToDefaults();
     if (displayMode == 0) tft.fillScreen(0);
   } else if (cmd == "reset_system") {
+    resetUserFilesystemToDefaults();
+    if (displayMode == 0) tft.fillScreen(0);
     factoryResetWifiCredentials();
     Serial.println("{\"cmd\":\"reset_system\",\"status\":\"ok\"}");
     delay(1000);
@@ -183,7 +201,7 @@ void processSerialCommand(const String& payload) {
     }
   } else if (cmd == "set_img_slideshow") {
     if (doc.containsKey("enabled")) slideshowEnabled = doc["enabled"].as<bool>();
-    if (doc.containsKey("interval")) switchInterval = constrain(doc["interval"].as<int>(), 3, 300);
+    if (doc.containsKey("interval")) switchInterval = constrain(doc["interval"].as<int>(), 3, 60);
     saveConfig();
     if (slideshowEnabled) lastImageSwitch = millis();
   } else if (cmd == "upload_start") {
@@ -298,7 +316,7 @@ void processSerialCommand(const String& payload) {
   } else if (cmd == "set_note_config") {
     if (doc.containsKey("pinned")) pinnedNoteIndex = doc["pinned"].as<int>();
     if (doc.containsKey("slideshow")) noteSlideshowEnabled = doc["slideshow"].as<bool>();
-    if (doc.containsKey("interval")) noteSwitchInterval = constrain(doc["interval"].as<int>(), 3, 300);
+    if (doc.containsKey("interval")) noteSwitchInterval = constrain(doc["interval"].as<int>(), 3, 60);
     saveConfig();
     if (displayMode == 2) {
       lastNoteSwitch = millis();

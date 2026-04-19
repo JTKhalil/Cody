@@ -12,6 +12,21 @@ void cleanupTempUploads() {
   LittleFS.remove("/tmp_upload.bin");
 }
 
+void resetUserFilesystemToDefaults() {
+  LittleFS.format();
+  currentImageIndex = 0;
+  imageCount = 0;
+  pinnedNoteIndex = -1;
+  currentNoteDisplayIndex = 0;
+  noteSlideshowEnabled = false;
+  noteSwitchInterval = 10;
+  switchInterval = 10;
+  slideshowEnabled = true;
+  lastImageSwitch = 0;
+  lastNoteSwitch = 0;
+  saveConfig();
+}
+
 void saveConfig() {
   File f = LittleFS.open("/config.txt", "w");
   if (!f) return;
@@ -41,8 +56,8 @@ void loadConfig() {
     }
   }
 
-  switchInterval = constrain(switchInterval, 3, 300);
-  noteSwitchInterval = constrain(noteSwitchInterval, 3, 300);
+  switchInterval = constrain(switchInterval, 3, 60);
+  noteSwitchInterval = constrain(noteSwitchInterval, 3, 60);
   if (currentImageIndex < 0 || currentImageIndex >= MAX_IMAGES) currentImageIndex = 0;
   // 0=图片 1=时钟 2=笔记 3=表情
   if (displayMode < 0 || displayMode > 3) displayMode = 0;
