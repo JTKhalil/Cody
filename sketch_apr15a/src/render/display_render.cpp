@@ -577,6 +577,30 @@ void drawSettingsMenuLongPressProgress(int selected, float progress01) {
   drawMenuItemWithLongPressProgress(y, items[selected], true, progress01);
 }
 
+void drawSettingsMenuClearLongPressProgress(int selected) {
+  static const char* items[] = {"退出", "网络状态", "配网设置", "软件更新", "抹掉所有内容和设置", "关于本机"};
+  constexpr int kN = 6;
+  if (selected < 0) selected = 0;
+  if (selected > kN - 1) selected = kN - 1;
+  if (!g_settingsMenuListValid) {
+    drawSettingsMenu(selected);
+    return;
+  }
+  resetLongPressProgressDeltaState();
+  const int firstY = 44;
+  const int lineStep = 30;
+  const int y = firstY + selected * lineStep;
+  drawMenuItem(y, items[selected], true);
+}
+
+void drawSettingsSoftwareUpdateClearLongPressProgress(int subSelected) {
+  resetLongPressProgressDeltaState();
+  if (subSelected < 0) subSelected = 0;
+  if (subSelected > 1) subSelected = 1;
+  drawMenuItem(168, "返回", subSelected == 0);
+  drawMenuItem(198, "开始更新", subSelected == 1);
+}
+
 void drawSettingsSoftwareUpdateLongPressProgress(int subSelected, float progress01) {
   if (subSelected < 0) subSelected = 0;
   if (subSelected > 1) subSelected = 1;

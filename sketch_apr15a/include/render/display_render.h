@@ -21,6 +21,9 @@ void invalidateSettingsMenuLayout();
 void drawSettingsMenu(int selected);
 /** 长按未松手时：选中行上浅绿条自左向右增长（0..1）；用于主菜单 */
 void drawSettingsMenuLongPressProgress(int selected, float progress01);
+/** 长按已显示进度但松手取消时：只重绘该行，避免整屏 invalidate 闪屏 */
+void drawSettingsMenuClearLongPressProgress(int selected);
+void drawSettingsSoftwareUpdateClearLongPressProgress(int subSelected);
 /** 软件更新页双按钮时：同上 */
 void drawSettingsSoftwareUpdateLongPressProgress(int subSelected, float progress01);
 void drawSettingsNetStatus(int selected);

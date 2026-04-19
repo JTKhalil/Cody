@@ -431,14 +431,22 @@ static void handleButtons() {
         // 长按已触发（fired）时，松手不要再整页重绘：子页/主菜单已在按下阈值到达时画过，否则会闪屏
         if (settingsActive) {
           if (!fired && !settingsFormatHoldActive) {
-            // 介于短按与长按之间松手：清除项内进度条需整页重画主菜单/软件更新页
+            // 介于短按与长按之间松手：仅清除选中行上的长按进度，勿 invalidate 整屏（会 fillScreen 黑闪）
             if (held > BOOT_SHORT_MAX_MS && held < BOOT_LONG_SETTINGS_MS) {
-              if (settingsPage == SET_PAGE_MENU ||
-                  (settingsPage == SET_PAGE_SOFT_UPDATE && settingsUpdateAvailable)) {
-                invalidateSettingsMenuLayout();
+              if (held >= SETTINGS_LONG_PRESS_PROGRESS_DELAY_MS) {
+                if (settingsPage == SET_PAGE_MENU) {
+                  drawSettingsMenuClearLongPressProgress(settingsSelected);
+                } else if (settingsPage == SET_PAGE_SOFT_UPDATE && settingsUpdateAvailable) {
+                  drawSettingsSoftwareUpdateClearLongPressProgress(settingsSubSelected);
+                } else {
+                  settingsShowCurrentPage();
+                }
+              } else {
+                settingsShowCurrentPage();
               }
+            } else {
+              settingsShowCurrentPage();
             }
-            settingsShowCurrentPage();
           }
         } else if (!isWifiConfigPortalActive()) {
           if (!fired) refreshDisplayByMode();
