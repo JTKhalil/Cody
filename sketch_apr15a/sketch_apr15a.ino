@@ -728,8 +728,7 @@ void loop() {
     if (!pcSerialToastActive) {
       struct tm timeinfo;
       if (getLocalTime(&timeinfo, 0) && timeinfo.tm_min != lastMinute) {
-        lastMinute = timeinfo.tm_min;
-        drawClockFace();
+        drawClockFaceOnMinuteTick();
       }
     }
   }

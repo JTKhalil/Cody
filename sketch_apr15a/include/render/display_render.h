@@ -1,6 +1,8 @@
 #pragma once
 
 void drawClockFace();
+/// 时钟模式：分钟变化时调用；尽量局部重绘时间，跨日则整屏重画，减少每分钟闪屏。
+void drawClockFaceOnMinuteTick();
 void refreshDisplayByMode();
 void printWrappedUTF8(String text, int x, int y, int maxWidth);
 void displayNoteOnScreen();

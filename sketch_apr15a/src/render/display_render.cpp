@@ -5,6 +5,16 @@
 // forward decls from other modules
 void loadSavedImage();
 
+// 与 drawClockFace 成功绘制后同步，供 drawClockFaceOnMinuteTick 判断是否跨日需全屏重画
+static int s_clockDom = -1;
+static int s_clockMon = -1;
+static int s_clockYear = -1;
+
+// 大号「时:分」基线 Y（Adafruit 光标）；与 drawClockFaceOnMinuteTick 必须一致
+static const int kClockTimeBaselineY = 68;
+// 年月日、星期相对计算位置再整体上移（像素）
+static const int kClockCalendarLiftPx = 25;
+
 void drawClockFace() {
   struct tm timeinfo;
   // 重要：getLocalTime() 默认会阻塞等待（可达数秒），会导致开机/切模式卡在上一屏（例如 Logo）。
@@ -26,22 +36,19 @@ void drawClockFace() {
     u8g2.print(msg2);
     // 与 loop 里「分钟变化才重画」对齐，避免刚切到时钟后立刻再全屏画一次导致闪屏
     lastMinute = -1;
+    s_clockDom = -1;
     return;
   }
 
-  // Mario 风格 UI（简化像素元素）：天空/云/金币/砖块/水管/地面
+  // Mario 风格 UI（简化像素元素）：天空/云/水管/地面
   const uint16_t SKY = tft.color565(92, 156, 255);
   const uint16_t CLOUD = tft.color565(252, 252, 252);
   const uint16_t CLOUD_S = tft.color565(210, 230, 255);
   const uint16_t GROUND = tft.color565(156, 92, 44);
   const uint16_t GROUND_D = tft.color565(120, 70, 30);
   const uint16_t GRASS = tft.color565(60, 200, 80);
-  const uint16_t BRICK = tft.color565(200, 108, 56);
-  const uint16_t BRICK_D = tft.color565(150, 70, 30);
   const uint16_t PIPE = tft.color565(20, 180, 70);
   const uint16_t PIPE_D = tft.color565(10, 120, 50);
-  const uint16_t COIN = tft.color565(255, 210, 0);
-  const uint16_t COIN_D = tft.color565(200, 150, 0);
 
   tft.fillScreen(SKY);
 
@@ -52,20 +59,6 @@ void drawClockFace() {
     tft.fillRoundRect(x + 8 * s, y + 6 * s, 26 * s, 10 * s, 6 * s, CLOUD);
     // 轻微阴影
     tft.drawRoundRect(x + 8 * s, y + 6 * s, 26 * s, 10 * s, 6 * s, CLOUD_S);
-  };
-
-  auto drawCoin = [&](int cx, int cy, int r) {
-    tft.fillCircle(cx, cy, r, COIN);
-    tft.drawCircle(cx, cy, r, COIN_D);
-    tft.drawFastVLine(cx, cy - r + 2, 2 * r - 4, COIN_D);
-  };
-
-  auto drawBrick = [&](int x, int y, int s) {
-    tft.fillRect(x, y, 10 * s, 8 * s, BRICK);
-    tft.drawRect(x, y, 10 * s, 8 * s, BRICK_D);
-    // 砖缝
-    tft.drawFastHLine(x, y + 4 * s, 10 * s, BRICK_D);
-    tft.drawFastVLine(x + 5 * s, y, 8 * s, BRICK_D);
   };
 
   auto drawPipe = [&](int x, int y, int w, int h) {
@@ -83,27 +76,19 @@ void drawClockFace() {
   drawCloud(18, 18, 1);
   drawCloud(138, 34, 1);
 
-  // 上方装饰：金币 + 砖块/问号块（简化为砖块）
-  drawCoin(36, 74, 8);
-  drawCoin(204, 70, 7);
-  drawBrick(92, 58, 2);   // 20x16
-  drawBrick(132, 58, 2);
-
-  // 地面（底部 52px）
   const int groundY = 188;
+  // 水管先画，再铺地面与草坪，使管身被泥土/草盖住（仅在天空露出的管口仍可见）
+  drawPipe(190, groundY - 36, 36, 74);
+
+  // 地面（底部 52px）与草坪盖在水管下半段之上
   tft.fillRect(0, groundY, 240, 240 - groundY, GROUND);
-  // 草地顶边
   tft.fillRect(0, groundY, 240, 6, GRASS);
-  // 地面纹理
   for (int x = 0; x < 240; x += 16) {
     tft.drawFastVLine(x, groundY + 8, 240 - groundY - 8, GROUND_D);
   }
   for (int y = groundY + 10; y < 240; y += 14) {
     tft.drawFastHLine(0, y, 240, GROUND_D);
   }
-
-  // 水管（右下角）
-  drawPipe(190, groundY - 36, 36, 74);
 
   char timeStr[6];
   sprintf(timeStr, "%02d:%02d", timeinfo.tm_hour, timeinfo.tm_min);
@@ -113,7 +98,7 @@ void drawClockFace() {
   int16_t x1, y1; uint16_t w, h;
   tft.getTextBounds(timeStr, 0, 0, &x1, &y1, &w, &h);
   int tx = (240 - w) / 2;
-  int ty = 78;
+  const int ty = kClockTimeBaselineY;
   tft.setTextColor(ST77XX_BLACK);
   tft.setCursor(tx + 2, ty + 2);
   tft.print(timeStr);
@@ -121,22 +106,86 @@ void drawClockFace() {
   tft.setCursor(tx, ty);
   tft.print(timeStr);
 
+  // 年月日、星期：在「时:分」像素下沿之下间隔 20px 起排字，水平居中（u8g2 的 y 为基线）
+  int16_t tbX1, tbY1;
+  uint16_t tw, th;
+  tft.getTextBounds(timeStr, tx, ty, &tbX1, &tbY1, &tw, &th);
+  // (tx,ty) 为基线：包围盒上沿为 ty+tbY1，下沿为 ty+tbY1+th-1；其下一行像素为 ty+tbY1+th
+  const int belowTimeRow = ty + tbY1 + th;
+
+  u8g2.setFont(u8g2_font_wqy16_t_gb2312);
+  const int fa = u8g2.getFontAscent();
+  const int fd = u8g2.getFontDescent(); // 通常为负
+  // 日期首行像素上沿 = 时间下沿 + 20；基线 = 上沿 + fa
+  int kDateBaselineY = belowTimeRow + 20 + fa;
+  // 星期在日期下一行
+  int kWeekBaselineY = kDateBaselineY + (fa - fd) + 6;
+  // 保证整段在地面之上，避免画进土里（groundY 见上方）
+  while (kWeekBaselineY - fd > groundY - 3) {
+    kDateBaselineY -= 3;
+    kWeekBaselineY -= 3;
+  }
+  kDateBaselineY -= kClockCalendarLiftPx;
+  kWeekBaselineY -= kClockCalendarLiftPx;
+
   char dateStr[32];
   sprintf(dateStr, "%04d年%02d月%02d日", timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday);
-  u8g2.setFont(u8g2_font_wqy16_t_gb2312);
   // 避免其它页面把 fontMode(0)/背景色残留，导致中文文字出现黑底
   u8g2.setFontMode(1); // 透明背景
   u8g2.setForegroundColor(ST77XX_WHITE);
   int dw = u8g2.getUTF8Width(dateStr);
-  // 日期放在草地上方
-  u8g2.setCursor((240 - dw) / 2, 168);
+  u8g2.setCursor((240 - dw) / 2, kDateBaselineY);
   u8g2.print(dateStr);
 
   const char* weekdays[] = {"星期日","星期一","星期二","星期三","星期四","星期五","星期六"};
   u8g2.setForegroundColor(ST77XX_YELLOW);
   int ww = u8g2.getUTF8Width(weekdays[timeinfo.tm_wday]);
-  u8g2.setCursor((240 - ww) / 2, 186);
+  u8g2.setCursor((240 - ww) / 2, kWeekBaselineY);
   u8g2.print(weekdays[timeinfo.tm_wday]);
+
+  lastMinute = timeinfo.tm_min;
+  s_clockDom = timeinfo.tm_mday;
+  s_clockMon = timeinfo.tm_mon + 1;
+  s_clockYear = timeinfo.tm_year + 1900;
+}
+
+void drawClockFaceOnMinuteTick() {
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo, 0)) return;
+
+  const int y = timeinfo.tm_year + 1900;
+  const int mo = timeinfo.tm_mon + 1;
+  const int d = timeinfo.tm_mday;
+
+  // 未做过整屏时钟或日历未同步：走全屏
+  if (s_clockDom < 0) {
+    drawClockFace();
+    return;
+  }
+  // 跨日/月/年：日期与星期需重画，直接全屏更简单且无接缝
+  if (d != s_clockDom || mo != s_clockMon || y != s_clockYear) {
+    drawClockFace();
+    return;
+  }
+
+  const uint16_t SKY = tft.color565(92, 156, 255);
+  // 仅清时间区域（与 kClockTimeBaselineY + 字号 5 匹配）
+  tft.fillRect(12, kClockTimeBaselineY - 10, 216, 58, SKY);
+
+  char timeStr[6];
+  sprintf(timeStr, "%02d:%02d", timeinfo.tm_hour, timeinfo.tm_min);
+  tft.setTextSize(5);
+  int16_t x1, y1;
+  uint16_t w, h;
+  tft.getTextBounds(timeStr, 0, 0, &x1, &y1, &w, &h);
+  const int tx = (240 - w) / 2;
+  const int ty = kClockTimeBaselineY;
+  tft.setTextColor(ST77XX_BLACK);
+  tft.setCursor(tx + 2, ty + 2);
+  tft.print(timeStr);
+  tft.setTextColor(ST77XX_WHITE);
+  tft.setCursor(tx, ty);
+  tft.print(timeStr);
 
   lastMinute = timeinfo.tm_min;
 }
