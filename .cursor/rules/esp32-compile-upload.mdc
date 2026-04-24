@@ -13,24 +13,28 @@ alwaysApply: false
 
 不能只提交代码差分而不跑编译/烧录。
 
-## 命令（与仓库根 `README.md` 一致）
+## 命令（与 `sketch_apr15a/flash.ps1` 中 `$Fqbn` 完全一致）
 
-- **arduino-cli**：`"C:\Program Files\Arduino CLI\arduino-cli.exe"`  
-- **草图目录**：与本仓库一致时为 `d:\mochi\Cody\sketch_apr15a`（按本机实际路径替换）  
-- **FQBN**：
+**优先**：在 `sketch_apr15a/` 下执行 `.\flash.ps1`（或 `.\flash.ps1 -Port COMx`），与人工烧录流程一致。
 
-`esp32:esp32:esp32c3:CDCOnBoot=cdc,CPUFreq=160,FlashFreq=80,FlashMode=dio,FlashSize=4M,JTAGAdapter=default,PartitionScheme=min_spiffs,UploadSpeed=921600,EraseFlash=none,ZigbeeMode=default,DebugLevel=none`
+**FQBN**（整段一行，与 `flash.ps1` 同步维护）：
+
+`esp32:esp32:esp32c3:CDCOnBoot=cdc,CPUFreq=160,FlashFreq=80,FlashMode=dio,FlashSize=4M,JTAGAdapter=default,PartitionScheme=huge_app,UploadSpeed=256000,EraseFlash=none,ZigbeeMode=default,DebugLevel=none`
+
+- **arduino-cli**（可选完整路径）：`"C:\Program Files\Arduino CLI\arduino-cli.exe"`  
+- **草图目录**：按本机实际路径，例如 `d:\mochi\CodyProject\Cody\sketch_apr15a`
 
 **编译：**
 
 ```powershell
-& "C:\Program Files\Arduino CLI\arduino-cli.exe" compile --fqbn "esp32:esp32:esp32c3:CDCOnBoot=cdc,CPUFreq=160,FlashFreq=80,FlashMode=dio,FlashSize=4M,JTAGAdapter=default,PartitionScheme=min_spiffs,UploadSpeed=921600,EraseFlash=none,ZigbeeMode=default,DebugLevel=none" "d:\mochi\Cody\sketch_apr15a"
+$Fqbn = 'esp32:esp32:esp32c3:CDCOnBoot=cdc,CPUFreq=160,FlashFreq=80,FlashMode=dio,FlashSize=4M,JTAGAdapter=default,PartitionScheme=huge_app,UploadSpeed=256000,EraseFlash=none,ZigbeeMode=default,DebugLevel=none'
+arduino-cli compile "--fqbn=$Fqbn" "d:\mochi\CodyProject\Cody\sketch_apr15a"
 ```
 
-**烧录**（端口以 `arduino-cli board list` 为准，常见 `COM5`）：
+**烧录**（端口以 `arduino-cli board list` 为准）：
 
 ```powershell
-& "C:\Program Files\Arduino CLI\arduino-cli.exe" upload -p COM5 --fqbn "esp32:esp32:esp32c3:CDCOnBoot=cdc,CPUFreq=160,FlashFreq=80,FlashMode=dio,FlashSize=4M,JTAGAdapter=default,PartitionScheme=min_spiffs,UploadSpeed=921600,EraseFlash=none,ZigbeeMode=default,DebugLevel=none" "d:\mochi\Cody\sketch_apr15a"
+arduino-cli upload "d:\mochi\CodyProject\Cody\sketch_apr15a" -p COM5 "--fqbn=$Fqbn"
 ```
 
 若 **port is busy**：提示关闭 WebSerial/串口监视器等占用 COM 的软件后重试。

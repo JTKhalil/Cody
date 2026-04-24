@@ -322,6 +322,20 @@ void processSerialCommand(const String& payload) {
     if (doc.containsKey("interval")) switchInterval = constrain(doc["interval"].as<int>(), 3, 60);
     saveConfig();
     if (slideshowEnabled) lastImageSwitch = millis();
+  } else if (cmd == "set_interval") {
+    // 与 HTTP /interval?value= 对齐：WXCody 发送 { "cmd":"set_interval", "value": N }
+    if (doc.containsKey("value")) {
+      switchInterval = constrain(doc["value"].as<int>(), 3, 60);
+      saveConfig();
+      if (slideshowEnabled) lastImageSwitch = millis();
+    } else {
+      resDoc["status"] = "error";
+      resDoc["msg"] = "missing value";
+    }
+  } else if (cmd == "slideshow_config") {
+    // 与 HTTP /slideshow_config 对齐：返回当前图库轮播开关与间隔（秒）
+    resDoc["enabled"] = slideshowEnabled;
+    resDoc["interval"] = switchInterval;
   } else if (cmd == "upload_start") {
     if (uploadFile) uploadFile.close();
     isUploading = false;

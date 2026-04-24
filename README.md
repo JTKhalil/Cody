@@ -56,9 +56,15 @@
 .\flash.ps1 -Port COM6
 ```
 
-脚本会调用 `arduino-cli compile` + `arduino-cli upload`，FQBN 在脚本内定义（见 `sketch_apr15a/flash.ps1`）。
+脚本会调用 `arduino-cli compile` + `arduino-cli upload`，**板卡与分区等选项以 `flash.ps1` 里的 `$Fqbn` 为唯一准绳**（勿与文档或其它脚本各写一套）。
 
-#### 方式 B：手动使用 arduino-cli
+#### 方式 B：手动使用 arduino-cli（必须与 `flash.ps1` 相同 FQBN）
+
+`flash.ps1` 当前使用的 FQBN 为（整段一行，勿换行）：
+
+```text
+esp32:esp32:esp32c3:CDCOnBoot=cdc,CPUFreq=160,FlashFreq=80,FlashMode=dio,FlashSize=4M,JTAGAdapter=default,PartitionScheme=huge_app,UploadSpeed=256000,EraseFlash=none,ZigbeeMode=default,DebugLevel=none
+```
 
 1) 查找端口：
 
@@ -66,16 +72,17 @@
 arduino-cli board list
 ```
 
-2) 编译（FQBN 以你实际脚本/板卡菜单为准）：
+2) 仅编译（路径按你本机仓库位置替换）：
 
 ```powershell
-arduino-cli compile --fqbn "<YOUR_FQBN>" "d:\mochi\CodyProject\Cody\sketch_apr15a"
+$Fqbn = 'esp32:esp32:esp32c3:CDCOnBoot=cdc,CPUFreq=160,FlashFreq=80,FlashMode=dio,FlashSize=4M,JTAGAdapter=default,PartitionScheme=huge_app,UploadSpeed=256000,EraseFlash=none,ZigbeeMode=default,DebugLevel=none'
+arduino-cli compile "--fqbn=$Fqbn" "d:\mochi\CodyProject\Cody\sketch_apr15a"
 ```
 
-3) 烧录：
+3) 烧录（将 `COM5` 换成实际端口）：
 
 ```powershell
-arduino-cli upload -p COM5 --fqbn "<YOUR_FQBN>" "d:\mochi\CodyProject\Cody\sketch_apr15a"
+arduino-cli upload "d:\mochi\CodyProject\Cody\sketch_apr15a" -p COM5 "--fqbn=$Fqbn"
 ```
 
 ### 常用协议（给 WXCody/调试用）

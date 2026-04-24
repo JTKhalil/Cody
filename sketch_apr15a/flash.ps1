@@ -1,4 +1,4 @@
-# 一键编译并烧录 sketch_apr15a（ESP32-C3 + min_spiffs）
+# 一键编译并烧录 sketch_apr15a（ESP32-C3，FQBN 与下方 $Fqbn 一致，当前为 huge_app）
 # 用法: .\flash.ps1
 #       .\flash.ps1 -Port COM6
 param(
