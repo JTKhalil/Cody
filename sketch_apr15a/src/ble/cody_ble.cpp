@@ -189,7 +189,6 @@ static void cody_ble_notify_raw(const uint8_t* data, size_t len) {
 
 class CodyServerCallbacks final : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer* s, NimBLEConnInfo& connInfo) override {
-    (void)s;
     g_allowed = false;
     g_connHandle = connInfo.getConnHandle();
     g_peerAddr = String(connInfo.getAddress().toString().c_str());
@@ -197,6 +196,10 @@ class CodyServerCallbacks final : public NimBLEServerCallbacks {
     g_pairClientId = "";
 
     g_connected = true;
+    // 请求更短连接间隔（单位 1.25ms），降低小包写入延迟；最终由手机协议栈接受/协商
+    if (s && g_connHandle != BLE_HS_CONN_HANDLE_NONE) {
+      s->updateConnParams(g_connHandle, 8, 12, 0, 400);
+    }
     // 绑定判定改为 clientId（小程序稳定生成），避免手机 BLE 隐私地址变化导致“以前连过但不再信任”。
     // 是否自动放行将在收到 pair_hello(id) 后决定。
     g_pairPending = true;
@@ -320,6 +323,8 @@ void cody_ble_init() {
 
   NimBLEDevice::init(g_bleName.c_str());
   NimBLEDevice::setPower(ESP_PWR_LVL_P9);
+  // 允许更大的 ATT MTU（对端发起交换时可协商到更高值）
+  NimBLEDevice::setMTU(247);
 
   static CodyServerCallbacks s_serverCb;
   static CodyRxCallbacks s_rxCb;

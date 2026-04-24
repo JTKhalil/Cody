@@ -8,6 +8,7 @@
 #include "include/ble/cody_ble.h"
 #include "include/storage/image_store.h"
 #include "include/core/config_store.h"
+#include "include/render/handdraw.h"
 
 namespace ble_image {
 namespace {
@@ -330,6 +331,43 @@ static void on_frame(uint8_t type, uint8_t session, uint8_t seq, const uint8_t* 
 
   // Dispatch OTA frames first (keeps BLE RX handler single-owner).
   if (ble_ota::on_frame(type, session, seq, payload, len)) {
+    return;
+  }
+
+  if (type == (uint8_t)ble_proto::FrameType::kHanddrawStrokeBatch) {
+    if (cody_ble_pair_pending() || displayMode != 4 || len < 1) {
+      return;
+    }
+    const uint8_t n = payload[0];
+    if (n == 0 || len != (uint16_t)(1 + (uint16_t)n * 7u)) {
+      return;
+    }
+    const uint8_t* p = payload + 1;
+    for (uint8_t i = 0; i < n; i++) {
+      const int x0 = (int)p[0];
+      const int y0 = (int)p[1];
+      const int x1 = (int)p[2];
+      const int y1 = (int)p[3];
+      const uint16_t c = (uint16_t)p[4] | ((uint16_t)p[5] << 8);
+      const int w = (int)p[6];
+      handdraw_draw_segment(x0, y0, x1, y1, c, w);
+      p += 7;
+    }
+    handdraw_notify_ble_stroke_received();
+    return;
+  }
+
+  if (type == (uint8_t)ble_proto::FrameType::kHanddrawStroke) {
+    if (!cody_ble_pair_pending() && len == 7 && displayMode == 4) {
+      const int x0 = (int)payload[0];
+      const int y0 = (int)payload[1];
+      const int x1 = (int)payload[2];
+      const int y1 = (int)payload[3];
+      const uint16_t c = (uint16_t)payload[4] | ((uint16_t)payload[5] << 8);
+      const int w = (int)payload[6];
+      handdraw_draw_segment(x0, y0, x1, y1, c, w);
+      handdraw_notify_ble_stroke_received();
+    }
     return;
   }
 

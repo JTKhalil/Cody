@@ -1,5 +1,6 @@
 #include "include/globals.h"
 #include "include/core/config_store.h"
+#include "include/render/handdraw.h"
 
 void printFSSpace() {
   size_t total = LittleFS.totalBytes();
@@ -13,6 +14,7 @@ void cleanupTempUploads() {
 }
 
 void resetUserFilesystemToDefaults() {
+  handdraw_release_buffer();
   LittleFS.format();
   currentImageIndex = 0;
   imageCount = 0;
@@ -59,7 +61,7 @@ void loadConfig() {
   switchInterval = constrain(switchInterval, 3, 60);
   noteSwitchInterval = constrain(noteSwitchInterval, 3, 60);
   if (currentImageIndex < 0) currentImageIndex = 0;
-  // 0=图片 1=时钟 2=笔记 3=表情
-  if (displayMode < 0 || displayMode > 3) displayMode = 0;
+  // 0=图片 1=时钟 2=笔记 3=表情 4=手绘
+  if (displayMode < 0 || displayMode > 4) displayMode = 0;
 }
 

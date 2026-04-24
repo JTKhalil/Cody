@@ -30,6 +30,11 @@ enum class FrameType : uint8_t {
   kOtaFinish = 0x22,
   // Optional status/progress.
   kOtaStatus = 0x23,
+  // Handdraw: one segment (RGB565 stroke). Payload 7B: x0,y0,x1,y1 (u8), color (le16), width (u8).
+  // Fire-and-forget: no ACK, to minimize airtime/latency.
+  kHanddrawStroke = 0x30,
+  // 多段手绘：payload = n(1B) + n×7B 线段（与 kHanddrawStroke 单段格式相同）
+  kHanddrawStrokeBatch = 0x31,
 };
 
 // ACK payload format:

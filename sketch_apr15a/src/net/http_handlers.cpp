@@ -4,6 +4,7 @@
 #include "include/core/config_store.h"
 #include "include/storage/image_store.h"
 #include "include/render/display_render.h"
+#include "include/render/handdraw.h"
 
 #if !CODY_ENABLE_WIFI_DEBUG
 void handleBrightness() {}
@@ -261,7 +262,15 @@ void handleGetMode() {
 void handleSetMode() {
   if (server.hasArg("mode")) {
     int nM = server.arg("mode").toInt();
-    if (nM >= 0 && nM <= 3) {
+    if (nM >= 0 && nM <= 4) {
+      const bool leavingDraw = (displayMode == 4 && nM != 4);
+      if (leavingDraw && !handdraw_ble_idle_for_ms(150)) {
+        server.send(200, "application/json", "{\"status\":\"error\",\"msg\":\"handdraw_transfer_busy\"}");
+        return;
+      }
+      if (leavingDraw) {
+        handdraw_flush_persist_now();
+      }
       displayMode = nM;
       saveConfig();
       // 在设置页内仅后台切换模式并落盘，不抢屏；退出设置时 refreshDisplayByMode() 会显示新模式

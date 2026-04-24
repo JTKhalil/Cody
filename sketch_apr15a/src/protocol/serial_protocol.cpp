@@ -7,6 +7,7 @@
 #include "include/core/config_store.h"
 #include "include/storage/image_store.h"
 #include "include/render/display_render.h"
+#include "include/render/handdraw.h"
 #include "include/net/ota_update.h"
 #include "include/net/system_ops.h"
 #include "include/ble/cody_ble.h"
@@ -156,6 +157,61 @@ void processSerialCommand(const String& payload) {
     return;
   }
 
+  if (cmd == "handdraw_meta") {
+    uint16_t bg565 = 0;
+    bool hasArt = false;
+    if (LittleFS.exists("/handdraw_state.txt")) {
+      File f = LittleFS.open("/handdraw_state.txt", "r");
+      if (f) {
+        String line = f.readStringUntil('\n');
+        f.close();
+        line.trim();
+        const int sp = line.indexOf(' ');
+        if (sp > 0) {
+          bg565 = (uint16_t)line.substring(0, sp).toInt();
+          hasArt = line.substring((unsigned int)(sp + 1)).toInt() != 0;
+        } else if (line.length() > 0) {
+          bg565 = (uint16_t)line.toInt();
+        }
+      }
+    } else if (LittleFS.exists("/handdraw.bin")) {
+      File f = LittleFS.open("/handdraw.bin", "r");
+      if (f && f.size() == (long)(240 * 240 * 2)) hasArt = true;
+      if (f) f.close();
+    }
+    String out = "{\"cmd\":\"handdraw_meta\",\"status\":\"ok\",\"bg\":\"";
+    out += (bg565 == (uint16_t)0x0000) ? "black" : "white";
+    out += "\",\"has_art\":";
+    out += hasArt ? "true" : "false";
+    out += "}";
+    serial_protocol_emit_line(out);
+    return;
+  }
+
+  if (cmd == "handdraw_pull_chunk") {
+    // 不强制 mode4：从 Flash/RAM 缓冲读取，便于与 set_mode 并行以缩短小程序首屏
+    const size_t off = (size_t)doc["off"].as<unsigned long>();
+    int lenReq = doc["len"].as<int>();
+    if (lenReq <= 0 || lenReq > 720) lenReq = 720;
+    uint8_t buf[720];
+    const size_t n = handdraw_copy_pixels(buf, off, (size_t)lenReq);
+    String line;
+    line.reserve((unsigned int)(48 + n * 2));
+    line += "{\"cmd\":\"handdraw_pull_chunk\",\"status\":\"ok\",\"off\":";
+    line += String((unsigned long)off);
+    line += ",\"len\":";
+    line += String((unsigned int)n);
+    line += ",\"data\":\"";
+    static const char hc[] = "0123456789abcdef";
+    for (size_t i = 0; i < n; i++) {
+      line += hc[(buf[i] >> 4) & 15];
+      line += hc[buf[i] & 15];
+    }
+    line += "\"}";
+    serial_protocol_emit_line(line);
+    return;
+  }
+
   DynamicJsonDocument resDoc(4096);
   resDoc["cmd"] = cmd;
   resDoc["status"] = "ok";
@@ -222,14 +278,88 @@ void processSerialCommand(const String& payload) {
     resDoc["mode"] = displayMode;
   } else if (cmd == "set_mode") {
     int nM = doc["mode"].as<int>();
-    if (nM >= 0 && nM <= 3) {
-      displayMode = nM;
-      saveConfig();
-      if (!settingsActive) {
-        refreshDisplayByMode();
+    if (nM >= 0 && nM <= 4) {
+      const bool leavingDraw = (displayMode == 4 && nM != 4);
+      if (leavingDraw && !handdraw_ble_idle_for_ms(150)) {
+        resDoc["status"] = "error";
+        resDoc["msg"] = "handdraw_transfer_busy";
+      } else {
+        if (leavingDraw) {
+          handdraw_flush_persist_now();
+        }
+        displayMode = nM;
+        saveConfig();
+        if (!settingsActive) {
+          refreshDisplayByMode();
+        }
       }
     } else {
       resDoc["status"] = "error";
+    }
+  } else if (cmd == "draw_stroke") {
+    if (displayMode != 4) {
+      resDoc["status"] = "error";
+      resDoc["msg"] = "need_mode_4";
+    } else {
+      int x0 = doc["x0"].as<int>();
+      int y0 = doc["y0"].as<int>();
+      int x1 = doc["x1"].as<int>();
+      int y1 = doc["y1"].as<int>();
+      uint32_t cu = doc["c"].as<unsigned long>();
+      uint16_t c = (uint16_t)(cu & 0xffffu);
+      int w = doc["w"].as<int>();
+      handdraw_draw_segment(x0, y0, x1, y1, c, w);
+      handdraw_notify_ble_stroke_received();
+    }
+  } else if (cmd == "handdraw_clear") {
+    if (displayMode != 4) {
+      resDoc["status"] = "error";
+      resDoc["msg"] = "need_mode_4";
+    } else {
+      handdraw_clear_ram();
+    }
+  } else if (cmd == "handdraw_save") {
+    if (displayMode != 4) {
+      resDoc["status"] = "error";
+      resDoc["msg"] = "need_mode_4";
+    } else if (!handdraw_save_to_file()) {
+      resDoc["status"] = "error";
+      resDoc["msg"] = "write_fail";
+    }
+  } else if (cmd == "handdraw_delete") {
+    if (displayMode != 4) {
+      resDoc["status"] = "error";
+      resDoc["msg"] = "need_mode_4";
+    } else {
+      handdraw_delete_saved();
+    }
+  } else if (cmd == "handdraw_set_bg") {
+    if (displayMode != 4) {
+      resDoc["status"] = "error";
+      resDoc["msg"] = "need_mode_4";
+    } else {
+      String bgs = doc["bg"].as<String>();
+      bgs.trim();
+      const bool wantBlack = (bgs == "black");
+      const bool wantWhite = (bgs == "white");
+      if (!wantBlack && !wantWhite) {
+        resDoc["status"] = "error";
+        resDoc["msg"] = "bad_bg";
+      } else if (!handdraw_set_background_bw(wantBlack)) {
+        resDoc["status"] = "error";
+        resDoc["msg"] = "bg_locked";
+      }
+    }
+  } else if (cmd == "handdraw_status") {
+    if (displayMode != 4) {
+      resDoc["status"] = "error";
+      resDoc["msg"] = "need_mode_4";
+    } else {
+      const uint16_t bg = handdraw_get_background_rgb565();
+      resDoc["bg"] = (bg == (uint16_t)0x0000) ? "black" : "white";
+      const bool locked = handdraw_has_locked_background();
+      resDoc["bg_locked"] = locked;
+      resDoc["can_change_bg"] = !locked;
     }
   } else if (cmd == "fs_space") {
     size_t t = LittleFS.totalBytes(), u = LittleFS.usedBytes();

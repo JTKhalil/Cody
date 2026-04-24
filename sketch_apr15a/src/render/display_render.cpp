@@ -1,6 +1,7 @@
 #include "include/globals.h"
 #include "include/render/display_render.h"
 #include "include/render/expression_mode.h"
+#include "include/render/handdraw.h"
 #include "include/ble/cody_ble.h"
 
 // forward decls from other modules
@@ -332,6 +333,7 @@ static void drawByModeOnce() {
   else if (displayMode == 1) drawClockFace();
   else if (displayMode == 2) displayNoteOnScreen();
   else if (displayMode == 3) expressionModeEnter();
+  // displayMode == 4 手绘：由 handdraw_on_mode_activate / handdraw_redraw_only 单独处理
 }
 
 void refreshDisplayByMode() {
@@ -340,6 +342,10 @@ void refreshDisplayByMode() {
   const bool modeChanged = (displayMode != lastMode);
 
   if (!modeChanged) {
+    if (displayMode == 4) {
+      handdraw_redraw_only();
+      return;
+    }
     drawByModeOnce();
     return;
   }
@@ -347,13 +353,21 @@ void refreshDisplayByMode() {
   // 第一次进入（开机）不做过渡，避免启动变慢
   if (lastMode < 0) {
     lastMode = displayMode;
-    drawByModeOnce();
+    if (displayMode == 4) {
+      handdraw_on_mode_activate();
+    } else {
+      drawByModeOnce();
+    }
     // 确保背光与逻辑亮度一致
     setBacklightMapped(backlightValue);
     return;
   }
 
+  const int prevModeForFlush = lastMode;
   lastMode = displayMode;
+  if (prevModeForFlush == 4 && displayMode != 4) {
+    handdraw_flush_persist_now();
+  }
 
   // 过渡：先几乎关背光，再画新模式，最后淡入——避免旧画面与新内容叠在一起造成“闪屏/鬼影”
   const int target = constrain(backlightValue, 0, 255);
@@ -362,7 +376,11 @@ void refreshDisplayByMode() {
   if (displayMode != 1) {
     tft.fillScreen(ST77XX_BLACK);
   }
-  drawByModeOnce();
+  if (displayMode == 4) {
+    handdraw_on_mode_activate();
+  } else {
+    drawByModeOnce();
+  }
   fadeBacklightMapped(0, target, 170);
 }
 
