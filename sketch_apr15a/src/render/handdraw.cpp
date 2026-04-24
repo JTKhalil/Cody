@@ -1,6 +1,7 @@
 #include "include/render/handdraw.h"
 
 #include "include/globals.h"
+#include "include/render/guess_game.h"
 #include <cstdio>
 #include <string.h>
 
@@ -132,14 +133,16 @@ static void handdraw_load_from_storage() {
 /// 将 RAM 帧缓冲推到 TFT；无笔迹时叠提示（文字不在 s_hd 内，首笔前会先全屏重绘清字）
 static void handdraw_present_framebuffer() {
   tft.drawRGBBitmap(0, 0, s_hd, kW, kH);
-  if (s_has_drawing) return;
-  u8g2.setFont(u8g2_font_wqy16_t_gb2312);
-  u8g2.setFontMode(1);
-  u8g2.setForegroundColor(ST77XX_WHITE);
-  const char* hint = "请在小程序端进行绘画";
-  const int tw = u8g2.getUTF8Width(hint);
-  u8g2.setCursor((kW - tw) / 2, kH / 2 + 8);
-  u8g2.print(hint);
+  if (!s_has_drawing && !guess_game_skip_empty_hint()) {
+    u8g2.setFont(u8g2_font_wqy16_t_gb2312);
+    u8g2.setFontMode(1);
+    u8g2.setForegroundColor(ST77XX_WHITE);
+    const char* hint = "请在小程序端进行绘画";
+    const int tw = u8g2.getUTF8Width(hint);
+    u8g2.setCursor((kW - tw) / 2, kH / 2 + 8);
+    u8g2.print(hint);
+  }
+  guess_game_redraw_overlays();
 }
 
 void handdraw_release_buffer() {
@@ -201,6 +204,7 @@ static inline void plot_disk(int cx, int cy, int r, uint16_t c) {
 }
 
 void handdraw_draw_segment(int x0, int y0, int x1, int y1, uint16_t rgb565, int widthPx) {
+  if (guess_game_is_showing_answer()) return;
   handdraw_ensure_alloc();
   // 清掉空状态提示（提示仅画在屏上，不在缓冲里）
   if (!s_has_drawing) {
@@ -275,12 +279,14 @@ void handdraw_draw_segment(int x0, int y0, int x1, int y1, uint16_t rgb565, int 
 
   s_persist_pending = true;
   s_persist_deadline_ms = millis() + kPersistDeferMs;
+  guess_game_redraw_overlays();
 }
 
 void handdraw_clear_ram() {
   handdraw_ensure_alloc();
   s_persist_pending = false;
   s_has_drawing = false;
+  guess_game_reset();
   handdraw_fill_solid_bg();
   s_buffer_inited = true;
   handdraw_present_framebuffer();

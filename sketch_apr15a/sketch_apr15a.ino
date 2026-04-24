@@ -12,6 +12,7 @@
 #include "include/storage/image_store.h"
 #include "include/render/display_render.h"
 #include "include/render/handdraw.h"
+#include "include/render/guess_game.h"
 #include "include/render/expression_mode.h"
 #include "include/protocol/serial_protocol.h"
 #include "include/ble/cody_ble.h"
@@ -404,12 +405,14 @@ static void restoreMainScreenAfterToast() {
 }
 
 static void cycleDisplayMode() {
+  if (guess_game_is_playing()) return;
   const int nextMode = (displayMode + 1) % 5;
   if (displayMode == 4 && nextMode != 4 && !handdraw_ble_idle_for_ms(150)) {
     return;
   }
   if (displayMode == 4) {
     handdraw_flush_persist_now();
+    if (nextMode != 4) guess_game_reset();
   }
   displayMode = nextMode;
   saveConfig();
@@ -929,6 +932,11 @@ void loop() {
     g_pcSerialToastWasShowing = false;
     g_pcSerialToastOverlayDrawn = false;
     restoreMainScreenAfterToast();
+  }
+
+  // 手绘：你画我猜倒计时
+  if (displayMode == 4 && !settingsActive && !cody_ble_pair_pending()) {
+    guess_game_tick();
   }
 
   // 手绘：处理笔画时主循环其余逻辑可能耗时，末尾再拉一次 BLE，减少「手机已画出一截屏才跟上」的体感延迟

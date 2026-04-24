@@ -5,6 +5,7 @@
 #include "include/storage/image_store.h"
 #include "include/render/display_render.h"
 #include "include/render/handdraw.h"
+#include "include/render/guess_game.h"
 
 #if !CODY_ENABLE_WIFI_DEBUG
 void handleBrightness() {}
@@ -256,13 +257,19 @@ void handleSetInterval() {
 }
 
 void handleGetMode() {
-  server.send(200, "application/json", "{\"mode\":" + String(displayMode) + "}");
+  const char* ga = guess_game_is_showing_answer() ? "true" : "false";
+  server.send(200, "application/json",
+               String("{\"mode\":") + String(displayMode) + ",\"guess_show_answer\":" + ga + "}");
 }
 
 void handleSetMode() {
   if (server.hasArg("mode")) {
     int nM = server.arg("mode").toInt();
     if (nM >= 0 && nM <= 4) {
+      if (guess_game_is_playing() && nM != displayMode) {
+        server.send(200, "application/json", "{\"status\":\"error\",\"msg\":\"guess_game_active\"}");
+        return;
+      }
       const bool leavingDraw = (displayMode == 4 && nM != 4);
       if (leavingDraw && !handdraw_ble_idle_for_ms(150)) {
         server.send(200, "application/json", "{\"status\":\"error\",\"msg\":\"handdraw_transfer_busy\"}");
@@ -270,6 +277,7 @@ void handleSetMode() {
       }
       if (leavingDraw) {
         handdraw_flush_persist_now();
+        guess_game_reset();
       }
       displayMode = nM;
       saveConfig();

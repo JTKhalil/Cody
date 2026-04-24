@@ -8,6 +8,7 @@
 #include "include/storage/image_store.h"
 #include "include/render/display_render.h"
 #include "include/render/handdraw.h"
+#include "include/render/guess_game.h"
 #include "include/net/ota_update.h"
 #include "include/net/system_ops.h"
 #include "include/ble/cody_ble.h"
@@ -276,21 +277,28 @@ void processSerialCommand(const String& payload) {
     resDoc["ms"] = millis();
   } else if (cmd == "get_mode") {
     resDoc["mode"] = displayMode;
+    resDoc["guess_show_answer"] = guess_game_is_showing_answer();
   } else if (cmd == "set_mode") {
     int nM = doc["mode"].as<int>();
     if (nM >= 0 && nM <= 4) {
-      const bool leavingDraw = (displayMode == 4 && nM != 4);
-      if (leavingDraw && !handdraw_ble_idle_for_ms(150)) {
+      if (guess_game_is_playing() && nM != displayMode) {
         resDoc["status"] = "error";
-        resDoc["msg"] = "handdraw_transfer_busy";
+        resDoc["msg"] = "guess_game_active";
       } else {
-        if (leavingDraw) {
-          handdraw_flush_persist_now();
-        }
-        displayMode = nM;
-        saveConfig();
-        if (!settingsActive) {
-          refreshDisplayByMode();
+        const bool leavingDraw = (displayMode == 4 && nM != 4);
+        if (leavingDraw && !handdraw_ble_idle_for_ms(150)) {
+          resDoc["status"] = "error";
+          resDoc["msg"] = "handdraw_transfer_busy";
+        } else {
+          if (leavingDraw) {
+            handdraw_flush_persist_now();
+            guess_game_reset();
+          }
+          displayMode = nM;
+          saveConfig();
+          if (!settingsActive) {
+            refreshDisplayByMode();
+          }
         }
       }
     } else {
@@ -300,6 +308,9 @@ void processSerialCommand(const String& payload) {
     if (displayMode != 4) {
       resDoc["status"] = "error";
       resDoc["msg"] = "need_mode_4";
+    } else if (guess_game_is_showing_answer()) {
+      resDoc["status"] = "error";
+      resDoc["msg"] = "guess_show_answer";
     } else {
       int x0 = doc["x0"].as<int>();
       int y0 = doc["y0"].as<int>();
@@ -317,6 +328,32 @@ void processSerialCommand(const String& payload) {
       resDoc["msg"] = "need_mode_4";
     } else {
       handdraw_clear_ram();
+    }
+  } else if (cmd == "guess_game_start") {
+    if (displayMode != 4) {
+      resDoc["status"] = "error";
+      resDoc["msg"] = "need_mode_4";
+    } else {
+      String w = doc["word"].as<String>();
+      w.trim();
+      int sec = doc.containsKey("seconds") ? doc["seconds"].as<int>() : 180;
+      if (sec < 10) sec = 10;
+      if (sec > 600) sec = 600;
+      if (w.length() == 0) {
+        resDoc["status"] = "error";
+        resDoc["msg"] = "need_word";
+      } else {
+        guess_game_reset();
+        handdraw_clear_ram();
+        guess_game_start(w.c_str(), (uint16_t)sec);
+      }
+    }
+  } else if (cmd == "guess_game_end") {
+    if (displayMode != 4) {
+      resDoc["status"] = "error";
+      resDoc["msg"] = "need_mode_4";
+    } else {
+      guess_game_end_round();
     }
   } else if (cmd == "handdraw_save") {
     if (displayMode != 4) {
