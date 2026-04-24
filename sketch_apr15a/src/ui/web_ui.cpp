@@ -1,5 +1,7 @@
+#include "include/feature_flags.h"
 #include "include/ui/web_ui.h"
 
+#if CODY_ENABLE_WIFI_DEBUG
 // Web 控制台前端页面
 const char INDEX_HTML[] PROGMEM = R"=====(
 <!DOCTYPE html>
@@ -656,4 +658,9 @@ const char INDEX_HTML[] PROGMEM = R"=====(
 </body>
 </html>
 )=====";
+
+#else
+// WiFi/Web 调试关闭：避免把大段 HTML 打进固件导致体积暴涨
+const char INDEX_HTML[] PROGMEM = "<!doctype html><html><body>disabled</body></html>";
+#endif
 

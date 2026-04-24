@@ -1,25 +1,63 @@
 #include "include/globals.h"
 #include "include/protocol/serial_protocol.h"
-#include <WiFi.h>
+#if CODY_ENABLE_WIFI_DEBUG
+  #include <WiFi.h>
+#endif
 #include "include/util_hex.h"
 #include "include/core/config_store.h"
 #include "include/storage/image_store.h"
 #include "include/render/display_render.h"
 #include "include/net/ota_update.h"
 #include "include/net/system_ops.h"
+#include "include/ble/cody_ble.h"
+#include "include/ble/ble_image.h"
 #include <Update.h>
 #include "mbedtls/base64.h"
+
+static ProtocolLineEmitter g_lineEmitter = nullptr;
+
+void serial_protocol_set_line_emitter(ProtocolLineEmitter emitter) {
+  g_lineEmitter = emitter;
+}
+
+void serial_protocol_emit_line(const String& line) {
+  Serial.println(line);
+  if (g_lineEmitter) g_lineEmitter(line);
+}
+
+static void emitJsonDocLine(JsonDocument& doc) {
+  // Avoid serializeJson(doc, String&) to keep code size down.
+  // Most protocol responses are small; if a doc doesn't fit, we still print to Serial,
+  // but skip forwarding to BLE emitter (which is size-limited anyway).
+  char buf[512];
+  const size_t n = serializeJson(doc, buf, sizeof(buf));
+  if (n == 0 || n >= sizeof(buf)) {
+    serializeJson(doc, Serial);
+    Serial.println();
+    return;
+  }
+
+  Serial.write((const uint8_t*)buf, n);
+  Serial.println();
+  if (g_lineEmitter) g_lineEmitter(String(buf));
+}
 
 void emitWifiJoinResultEvent(bool ok) {
   DynamicJsonDocument doc(512);
   doc["cmd"] = "wifi_join_result";
   doc["status"] = "ok";
   doc["ok"] = ok;
-  doc["connected"] = (WiFi.status() == WL_CONNECTED);
-  doc["ssid"] = WiFi.SSID();
-  doc["ip"] = WiFi.localIP().toString();
-  serializeJson(doc, Serial);
-  Serial.println();
+  #if CODY_ENABLE_WIFI_DEBUG
+    doc["connected"] = (WiFi.status() == WL_CONNECTED);
+    doc["ssid"] = WiFi.SSID();
+    doc["ip"] = WiFi.localIP().toString();
+  #else
+    doc["connected"] = false;
+    doc["ssid"] = "";
+    doc["ip"] = "";
+    doc["msg"] = "wifi_debug_disabled";
+  #endif
+  emitJsonDocLine(doc);
 }
 
 // 串口推送固件（由 PC 下载后分块写入 OTA 分区）
@@ -32,29 +70,46 @@ void processSerialCommand(const String& payload) {
   DynamicJsonDocument doc(12288);
   DeserializationError error = deserializeJson(doc, payload);
   if (error) {
-    Serial.print("{\"cmd\":\"error\",\"status\":\"error\",\"msg\":\"JSON Parse Error\"}");
-    Serial.println();
+    serial_protocol_emit_line("{\"cmd\":\"error\",\"status\":\"error\",\"msg\":\"JSON Parse Error\"}");
     return;
   }
 
   String cmd = doc["cmd"].as<String>();
 
   if (cmd == "get_notes") {
-    Serial.print("{\"cmd\":\"get_notes\",\"status\":\"ok\",\"noteSlideshow\":");
-    Serial.print(noteSlideshowEnabled ? "true" : "false");
-    Serial.print(",\"noteInterval\":");
-    Serial.print(noteSwitchInterval);
-    Serial.print(",\"pinned\":");
-    Serial.print(pinnedNoteIndex);
-    Serial.print(",\"notes\":");
+    // 注意：该响应可能很长（notes 数组），必须通过 serial_protocol_emit_line 转发到 BLE，
+    // 不能仅 Serial.print，否则 WxCody 无法收到回包。
+    String notesJson = "[]";
     if (LittleFS.exists("/notes.json")) {
       File f = LittleFS.open("/notes.json", "r");
-      while (f.available()) Serial.write(f.read());
-      f.close();
-    } else {
-      Serial.print("[]");
+      if (f) {
+        const size_t sz = f.size();
+        // 防御：避免极端情况下构造超大 String 造成内存碎片或 OOM
+        if (sz > 64 * 1024) {
+          f.close();
+          serial_protocol_emit_line("{\"cmd\":\"get_notes\",\"status\":\"error\",\"msg\":\"notes_too_large\"}");
+          return;
+        }
+        notesJson = "";
+        notesJson.reserve((unsigned int)sz + 8);
+        while (f.available()) notesJson += (char)f.read();
+        f.close();
+      }
     }
-    Serial.println("}");
+
+    String line;
+    line.reserve((unsigned int)128 + (unsigned int)notesJson.length());
+    line += "{\"cmd\":\"get_notes\",\"status\":\"ok\",\"noteSlideshow\":";
+    line += (noteSlideshowEnabled ? "true" : "false");
+    line += ",\"noteInterval\":";
+    line += String(noteSwitchInterval);
+    line += ",\"pinned\":";
+    line += String(pinnedNoteIndex);
+    line += ",\"notes\":";
+    line += notesJson;
+    line += "}";
+
+    serial_protocol_emit_line(line);
     return;
   }
 
@@ -106,12 +161,27 @@ void processSerialCommand(const String& payload) {
   resDoc["status"] = "ok";
 
   if (cmd == "sync_time") {
+    // 提示：小程序开始同步时间
+    if (displayMode == 1 && !settingsActive) {
+      drawTimeSyncingHint();
+    }
     long epoch = doc["timestamp"].as<long>();
     struct timeval tv;
     tv.tv_sec = epoch;
     tv.tv_usec = 0;
     settimeofday(&tv, NULL);
+    // 标记：时间已由外部（BLE/串口）校准
+    g_timeCalibrated = true;
+    // 若当前在时钟模式，立刻刷新一次界面（不等分钟 tick）
+    if (displayMode == 1 && !settingsActive) {
+      drawClockFace();
+      lastMinute = -1;
+    }
   } else if (cmd == "set_wifi") {
+    #if !CODY_ENABLE_WIFI_DEBUG
+    resDoc["status"] = "error";
+    resDoc["msg"] = "wifi_debug_disabled";
+    #else
     String newSsid = doc["ssid"].as<String>();
     String newPsk = doc["psk"].as<String>();
     newSsid.trim();
@@ -134,10 +204,18 @@ void processSerialCommand(const String& payload) {
 
     isTryingNewWifi = true;
     wifiTryStart = millis();
+    #endif
   } else if (cmd == "wifi_status") {
+    #if CODY_ENABLE_WIFI_DEBUG
     resDoc["connected"] = (WiFi.status() == WL_CONNECTED);
     resDoc["ssid"] = WiFi.SSID();
     resDoc["ip"] = WiFi.localIP().toString();
+    #else
+    resDoc["connected"] = false;
+    resDoc["ssid"] = "";
+    resDoc["ip"] = "";
+    resDoc["msg"] = "wifi_debug_disabled";
+    #endif
   } else if (cmd == "uptime") {
     resDoc["ms"] = millis();
   } else if (cmd == "get_mode") {
@@ -169,13 +247,53 @@ void processSerialCommand(const String& payload) {
     resetUserFilesystemToDefaults();
     if (displayMode == 0) tft.fillScreen(0);
     factoryResetWifiCredentials();
-    Serial.println("{\"cmd\":\"reset_system\",\"status\":\"ok\"}");
+    serial_protocol_emit_line("{\"cmd\":\"reset_system\",\"status\":\"ok\"}");
     delay(1000);
     ESP.restart();
+  } else if (cmd == "ble_forget") {
+    // Clear trusted devices list so next connect requires on-device confirmation again.
+    cody_ble_clear_trusted();
+  } else if (cmd == "img_cancel") {
+    // Cancel current BLE image upload (keep existing images intact).
+    ble_image::cancel_push();
   } else if (cmd == "image_info") {
     scanImages();
-    JsonArray arr = resDoc.createNestedArray("slots");
-    for (int i = 0; i < MAX_IMAGES; i++) arr.add(LittleFS.exists("/img" + String(i) + ".bin"));
+    // 动态图库：不再固定 MAX_IMAGES。
+    // 返回已有槽位索引列表 + 存储信息 + 是否还能新增一张 + 下一空槽位。
+    const size_t totalB = LittleFS.totalBytes();
+    const size_t usedB = LittleFS.usedBytes();
+    const size_t freeB = (totalB > usedB) ? (totalB - usedB) : 0;
+    resDoc["fs_total_b"] = (uint32_t)totalB;
+    resDoc["fs_used_b"] = (uint32_t)usedB;
+    resDoc["fs_free_b"] = (uint32_t)freeB;
+
+    static constexpr uint32_t kImageBytes = 240u * 240u * 2u;
+    static constexpr uint32_t kReserveBytesForAdd = kImageBytes * 2u; // 预留至少两张图的空间，才允许显示“新增空槽位”
+    resDoc["img_bytes"] = kImageBytes;
+    resDoc["can_add"] = (freeB >= (size_t)kReserveBytesForAdd);
+    resDoc["next_slot"] = image_next_free_slot();
+
+    // 兼容旧字段：不再输出巨大布尔数组 slots（避免 BLE JSON 行过大）。
+    // 改为 indices：已有图片的 slot 列表。
+    JsonArray indices = resDoc.createNestedArray("indices");
+    File root = LittleFS.open("/");
+    if (root) {
+      while (true) {
+        File f = root.openNextFile();
+        if (!f) break;
+        String name = String(f.name());
+        size_t sz = f.size();
+        f.close();
+        if (!name.startsWith("/")) name = "/" + name;
+        if (!name.startsWith("/img") || !name.endsWith(".bin")) continue;
+        if (sz != kImageBytes) continue;
+        String numStr = name.substring(4, name.length() - 4);
+        int slot = numStr.toInt();
+        if (slot < 0 || slot > 250) continue;
+        indices.add(slot);
+      }
+      root.close();
+    }
     resDoc["current"] = currentImageIndex;
     resDoc["slideshow"] = slideshowEnabled;
     resDoc["interval"] = switchInterval;
@@ -196,7 +314,7 @@ void processSerialCommand(const String& payload) {
     if (currentImageIndex == s && imageCount > 0) nextImage();
     saveConfig();
     if (displayMode == 0) {
-      if (imageCount == 0) tft.fillScreen(ST77XX_BLACK);
+      if (imageCount == 0) loadSavedImage(); // 显示「图库空空如也」
       else displayImageFromFile(currentImageIndex);
     }
   } else if (cmd == "set_img_slideshow") {
@@ -440,7 +558,7 @@ void processSerialCommand(const String& payload) {
         gOtaSerialActive = false;
       } else {
         gOtaSerialActive = false;
-        Serial.println("{\"cmd\":\"ota_serial_finish\",\"status\":\"ok\"}");
+        serial_protocol_emit_line("{\"cmd\":\"ota_serial_finish\",\"status\":\"ok\"}");
         delay(500);
         ESP.restart();
         return;
@@ -450,20 +568,23 @@ void processSerialCommand(const String& payload) {
     // 版本比对与固件下载由 PC 完成；设备只回报本机版本号
     resDoc["current"] = CURRENT_VERSION;
   } else if (cmd == "do_update") {
-    Serial.println("{\"cmd\":\"do_update\",\"status\":\"ok\"}");
-    delay(500);
-    handleDoUpdate();
-    return;
+    #if CODY_ENABLE_WIFI_DEBUG
+      serial_protocol_emit_line("{\"cmd\":\"do_update\",\"status\":\"ok\"}");
+      delay(500);
+      handleDoUpdate();
+      return;
+    #else
+      resDoc["status"] = "error";
+      resDoc["msg"] = "wifi_debug_disabled";
+    #endif
   } else if (cmd == "reboot") {
     resDoc["msg"] = "restarting";
-    serializeJson(resDoc, Serial);
-    Serial.println();
+    emitJsonDocLine(resDoc);
     delay(200);
     ESP.restart();
     return;
   }
 
-  serializeJson(resDoc, Serial);
-  Serial.println();
+  emitJsonDocLine(resDoc);
 }
 

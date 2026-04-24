@@ -1,14 +1,21 @@
 #include "include/globals.h"
+#include "include/feature_flags.h"
+
+#if CODY_ENABLE_WIFI_DEBUG
 #include "include/ui/web_ui.h"
-#include "include/core/config_store.h"
-#include "include/storage/image_store.h"
-#include "include/render/display_render.h"
-#include "include/render/expression_mode.h"
 #include "include/net/http_handlers.h"
 #include "include/storage/note_store.h"
 #include "include/net/ota_update.h"
 #include "include/net/system_ops.h"
+#endif
+#include "include/core/config_store.h"
+#include "include/storage/image_store.h"
+#include "include/render/display_render.h"
+#include "include/render/expression_mode.h"
 #include "include/protocol/serial_protocol.h"
+#include "include/ble/cody_ble.h"
+#include "include/ble/ble_image.h"
+#include "include/ble/ble_ota.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/semphr.h>
@@ -36,6 +43,11 @@ const char* URL_BIN = "https://raw.githubusercontent.com/JTKhalil/claudeRobot/re
 #define BTN_BOOT_PIN 9
 #endif
 
+// 左键（用于 BLE 配对确认）：默认与 BOOT 相同，若你的硬件左键另有 GPIO，可在编译时覆盖该宏
+#ifndef BTN_LEFT_PIN
+#define BTN_LEFT_PIN BTN_BOOT_PIN
+#endif
+
 static const unsigned long BTN_DEBOUNCE_MS = 35;
 
 // BOOT 短按/长按阈值
@@ -55,7 +67,9 @@ static bool bootLongActionFired = false;
 
 Adafruit_ST7789 tft = Adafruit_ST7789(TFT_CS, TFT_DC, TFT_RST);
 U8G2_FOR_ADAFRUIT_GFX u8g2; 
+#if CODY_ENABLE_WIFI_DEBUG
 WebServer server(80);
+#endif
 
 int lastMinute = -1;
 int displayMode = 0;
@@ -67,6 +81,8 @@ unsigned long lastImageSwitch = 0;
 int switchInterval = DEFAULT_INTERVAL;
 bool slideshowEnabled = true;
 bool slideshowPaused = false;
+
+volatile bool g_timeCalibrated = false;
 
 int pinnedNoteIndex = -1; 
 bool noteSlideshowEnabled = false;
@@ -82,6 +98,7 @@ size_t totalWritten = 0;
 
 String serialBuffer = "";
 
+#if CODY_ENABLE_WIFI_DEBUG
 // --- WiFi 回退保护与状态变量 ---
 bool isTryingNewWifi = false;
 String targetSSID = ""; // 新增：必须校验目标网络名称，防止幽灵连接状态
@@ -89,6 +106,7 @@ String fallbackSSID = "";
 String fallbackPSK = "";
 unsigned long wifiTryStart = 0;
 // ---------------------------------
+#endif
 
 // --- 开机 WiFi：后台只尝试一次，失败后停止 ---
 static bool bootWifiAttemptActive = false;
@@ -100,13 +118,14 @@ static const unsigned long BOOT_WIFI_ONESHOT_TIMEOUT_MS = 15000;
 // --- 设置页状态机 ---
 enum SettingsPage {
   SET_PAGE_MENU = 0,
-  SET_PAGE_NET_STATUS = 1,
+  SET_PAGE_BLE_INFO = 1,
+  // 旧页面保留枚举值，但在 wxcody-ble 固件中不再提供入口
   SET_PAGE_SOFT_UPDATE = 2,
   SET_PAGE_ABOUT = 3,
 };
 bool settingsActive = false;
 static SettingsPage settingsPage = SET_PAGE_MENU;
-static int settingsSelected = 0;      // menu: 0..5
+static int settingsSelected = 0;      // menu: 0..2（已移除 WiFi/Web 相关项）
 static int settingsSubSelected = 0;   // sub pages: 0..1
 // 软件更新信息缓存（进入软件更新页时拉取一次）
 static bool settingsOtaFetched = false;
@@ -137,6 +156,7 @@ static const unsigned long SETTINGS_LONG_PRESS_THROTTLE_MS = 16;
 // --------------------
 
 // 软件更新页提示文案：避免 WiFi 已连接但 hint 为空时被画成「已是最新版本」；检查中始终显示「正在检查中...」
+#if CODY_ENABLE_WIFI_DEBUG
 static const char* settingsSoftUpdateHintForDraw() {
   if (WiFi.status() != WL_CONNECTED) {
     return "未联网，无法检查更新";
@@ -175,6 +195,11 @@ static void settingsOtaCheckTask(void* pv) {
   settingsOtaTaskHandle = nullptr;
   vTaskDelete(nullptr);
 }
+#else
+static const char* settingsSoftUpdateHintForDraw() {
+  return "WiFi/Web 调试已关闭";
+}
+#endif
 
 // ── 5. 主程序 ─────────────────────────────────────────────────
 void setup() {
@@ -185,6 +210,9 @@ void setup() {
 
   // 按键：低电平按下
   pinMode(BTN_BOOT_PIN, INPUT_PULLUP);
+  if (BTN_LEFT_PIN != BTN_BOOT_PIN) {
+    pinMode(BTN_LEFT_PIN, INPUT_PULLUP);
+  }
   
   pinMode(TFT_BLK, OUTPUT);
   backlightValue = 255;
@@ -224,15 +252,21 @@ void setup() {
   }
 
   if (!LittleFS.begin(true)) { LittleFS.format(); LittleFS.begin(true); }
+
+  // 无 WiFi/NTP 也要能显示本地时间：设置时区（中国 UTC+8）
+  setenv("TZ", "CST-8", 1);
+  tzset();
   
   cleanupTempUploads(); loadConfig();
   
+#if CODY_ENABLE_WIFI_DEBUG
   WiFi.mode(WIFI_STA); 
   WiFi.persistent(false);
   WiFi.setAutoReconnect(false); // 失败后不自动反复重连
   wifi_config_t conf;
   esp_wifi_get_config(WIFI_IF_STA, &conf);
   (void)conf;
+#endif
 
   scanImages();
   refreshDisplayByMode();
@@ -240,12 +274,18 @@ void setup() {
   lastNoteSwitch = millis();
 
   // 与是否连接 PC 串口无关：统一后台尝试联网一次（HTML 串口连上时不再全屏阻塞/不因此改变启动流程）
+  #if CODY_ENABLE_WIFI_DEBUG
   WiFi.begin();
   configTime(8 * 3600, 0, "ntp.aliyun.com", "pool.ntp.org");
   bootWifiAttemptActive = true;
   bootWifiAttemptDone = false;
   bootWifiAttemptStart = millis();
+  #else
+  bootWifiAttemptActive = false;
+  bootWifiAttemptDone = true;
+  #endif
   
+#if CODY_ENABLE_WIFI_DEBUG
   server.on("/", HTTP_GET, []() { server.send_P(200, "text/html", INDEX_HTML); });
   server.on("/image_info", HTTP_GET, handleImageInfo);
   server.on("/get_image", HTTP_GET, handleGetImage);
@@ -273,9 +313,15 @@ void setup() {
   server.on("/get_mode", HTTP_GET, handleGetMode);
   server.on("/set_mode", HTTP_GET, handleSetMode);
   server.begin();
+#endif
 
   // OTA 检查互斥锁（用于后台任务写入状态）
   settingsOtaMutex = xSemaphoreCreateMutex();
+
+  // BLE: minimal GATT skeleton (advertise + connect + RX->TX notify OK)
+  cody_ble_init();
+  ble_image::init();
+  ble_ota::init();
 }
 
 static void settingsEnterMenu() {
@@ -296,10 +342,31 @@ static void settingsExit() {
   refreshDisplayByMode();
 }
 
+static void drawWifiDebugDisabledHint(const char* title) {
+  tft.fillScreen(ST77XX_BLACK);
+  u8g2.setFont(u8g2_font_wqy16_t_gb2312);
+  u8g2.setFontMode(1);
+  u8g2.setForegroundColor(ST77XX_CYAN);
+  u8g2.setCursor(10, 36);
+  u8g2.print(title ? title : "WiFi");
+  u8g2.setForegroundColor(ST77XX_WHITE);
+  u8g2.setCursor(10, 76);
+  u8g2.print("此固件已关闭");
+  u8g2.setCursor(10, 98);
+  u8g2.print("WiFi/Web 调试功能");
+  u8g2.setForegroundColor(0xAD55);
+  u8g2.setCursor(10, 140);
+  u8g2.print("请用 BLE 小程序控制");
+  delay(900);
+  settingsShowCurrentPage();
+}
+
 static void performSettingsFormat() {
   drawHoldProgressReset();
   // 禁止在此处栈上构造 WiFiManager：体积大，ESP32-C3 易栈溢出导致无法开机/反复复位
+  #if CODY_ENABLE_WIFI_DEBUG
   factoryResetWifiCredentials();
+  #endif
   delay(200);
   LittleFS.format();
   if (!LittleFS.begin(true)) {
@@ -325,17 +392,12 @@ static void settingsShowCurrentPage() {
   if (!settingsActive) return;
   if (settingsFormatHoldActive) return;
   if (settingsPage == SET_PAGE_MENU) drawSettingsMenu(settingsSelected);
-  else if (settingsPage == SET_PAGE_NET_STATUS) drawSettingsNetStatus(settingsSubSelected);
-  else if (settingsPage == SET_PAGE_SOFT_UPDATE) {
-    drawSettingsSoftwareUpdate(settingsSubSelected, CURRENT_VERSION,
-                               settingsLatestVer.c_str(), settingsUpdateAvailable,
-                               settingsSoftUpdateHintForDraw(),
-                               settingsNotes.c_str());
-  }
   else if (settingsPage == SET_PAGE_ABOUT) drawSettingsAbout(settingsSubSelected);
+  else if (settingsPage == SET_PAGE_BLE_INFO) drawSettingsBleInfo(settingsSubSelected);
 }
 
 static void restoreMainScreenAfterToast() {
+  if (cody_ble_pair_pending()) return;
   if (settingsActive) settingsShowCurrentPage();
   else refreshDisplayByMode();
 }
@@ -346,8 +408,91 @@ static void cycleDisplayMode() {
   refreshDisplayByMode();
 }
 
+// BLE 配对确认 UI：仅在进入确认态时绘制一次；若断开/切换 peer 则重置。
+static bool g_blePairPromptDrawn = false;
+static String g_blePairPromptPeer = "";
+static uint32_t g_blePairPctBucket = 0xFFFFFFFFu;
+
 static void handleButtons() {
   const unsigned long now = millis();
+
+  // BLE 首次配对确认：短按拒绝，长按允许
+  if (cody_ble_pair_pending()) {
+    const String peer = String(cody_ble_pair_peer());
+    // 仅在收到设备名称（pair_hello）后才显示连接确认页
+    if (peer.length() == 0) {
+      delay(5);
+      return;
+    }
+    if (!g_blePairPromptDrawn || g_blePairPromptPeer != peer) {
+      drawBlePairPrompt(peer.c_str());
+      g_blePairPromptDrawn = true;
+      g_blePairPromptPeer = peer;
+    }
+
+    // 用左键确认配对（默认=BOOT；可通过 BTN_LEFT_PIN 覆盖）
+    bool bootRaw = digitalRead(BTN_LEFT_PIN); // true=未按, false=按下
+    if (bootRaw != bootRawPrev) {
+      bootRawPrev = bootRaw;
+      bootRawChangeAt = now;
+    }
+    if ((now - bootRawChangeAt) > BTN_DEBOUNCE_MS && bootStableLevel != bootRaw) {
+      bootStableLevel = bootRaw;
+      if (bootStableLevel == false) {
+        bootIsHolding = true;
+        bootHoldStart = now;
+        bootLongActionFired = false;
+      } else {
+        if (!bootIsHolding) return;
+        const unsigned long held = now - bootHoldStart;
+        bootIsHolding = false;
+        // 松手取消（未达到长按阈值且不是短按拒绝）：进度归零但仍停留在确认页
+        if (!bootLongActionFired && held > BOOT_SHORT_MAX_MS && held < BOOT_LONG_SETTINGS_MS) {
+          g_blePairPctBucket = 0xFFFFFFFFu;
+          drawBlePairProgress(0);
+          return;
+        }
+        if (!bootLongActionFired && held <= BOOT_SHORT_MAX_MS) {
+          cody_ble_pair_reject();
+          g_blePairPromptDrawn = false;
+          g_blePairPromptPeer = "";
+          g_blePairPctBucket = 0xFFFFFFFFu;
+          drawBlePairProgress(0);
+          delay(80);
+          restoreMainScreenAfterToast();
+          return;
+        }
+      }
+    }
+
+    if (bootIsHolding && !bootLongActionFired) {
+      const unsigned long held = now - bootHoldStart;
+      // 进度条：每 50ms 刷一次，避免闪屏
+      const uint32_t bucket = (uint32_t)(held / 50);
+      if (bucket != g_blePairPctBucket) {
+        g_blePairPctBucket = bucket;
+        const uint32_t p = (held >= BOOT_LONG_SETTINGS_MS) ? 100u : (uint32_t)((held * 100u) / BOOT_LONG_SETTINGS_MS);
+        drawBlePairProgress((uint8_t)p);
+      }
+      if (held >= BOOT_LONG_SETTINGS_MS) {
+        bootLongActionFired = true;
+        cody_ble_pair_accept();
+        g_blePairPromptDrawn = false;
+        g_blePairPromptPeer = "";
+        g_blePairPctBucket = 0xFFFFFFFFu;
+        // 恢复到进入确认前的页面（设置页/模式页）
+        delay(80);
+        restoreMainScreenAfterToast();
+        return;
+      }
+    }
+    return;
+  }
+  // 离开确认态：允许下次重新绘制确认页
+  if (g_blePairPromptDrawn) {
+    g_blePairPromptDrawn = false;
+    g_blePairPromptPeer = "";
+  }
 
   // --- BOOT（短按：切换选项/切换模式；长按：进入设置/执行选项） ---
   bool bootRaw = digitalRead(BTN_BOOT_PIN); // true=未按, false=按下
@@ -377,11 +522,13 @@ static void handleButtons() {
         if (settingsActive) {
           if (settingsFormatHoldActive) return;
           // 配网模式页：短按退出配网并回到设置菜单
+          #if CODY_ENABLE_WIFI_DEBUG
           if (isWifiConfigPortalActive()) {
             wifiConfigPortalStopFromUser();
             drawSettingsMenu(settingsSelected);
             return;
           }
+          #endif
           // 关于本机：短按直接返回（按你的需求）
           if (settingsPage == SET_PAGE_ABOUT) {
             settingsPage = SET_PAGE_MENU;
@@ -389,38 +536,44 @@ static void handleButtons() {
             drawSettingsMenu(settingsSelected);
             return;
           }
-          // 仅“返回”页面：短按直接返回，不做选项切换，也不画返回按钮
-          if (settingsPage == SET_PAGE_NET_STATUS) {
+          // 连接说明：若已绑定设备，则短按在“返回/删除信任设备”间切换；否则短按直接返回
+          if (settingsPage == SET_PAGE_BLE_INFO) {
+            if (cody_ble_has_trusted()) {
+              settingsSubSelected = (settingsSubSelected + 1) % 2;
+              drawSettingsBleInfo(settingsSubSelected);
+              return;
+            }
             settingsPage = SET_PAGE_MENU;
             settingsSubSelected = 0;
             drawSettingsMenu(settingsSelected);
             return;
           }
-          if (settingsPage == SET_PAGE_SOFT_UPDATE && !settingsUpdateAvailable) {
+          if (settingsPage == SET_PAGE_SOFT_UPDATE) {
             settingsPage = SET_PAGE_MENU;
             settingsSubSelected = 0;
             drawSettingsMenu(settingsSelected);
             return;
           }
           if (settingsPage == SET_PAGE_MENU) {
-            settingsSelected = (settingsSelected + 1) % 6;
+            settingsSelected = (settingsSelected + 1) % 3;
             drawSettingsMenu(settingsSelected);
           } else {
             int optCount = 2;
-            if (settingsPage == SET_PAGE_NET_STATUS) optCount = 1; // 仅返回
+            if (settingsPage == SET_PAGE_BLE_INFO) optCount = cody_ble_has_trusted() ? 2 : 1;
             else if (settingsPage == SET_PAGE_ABOUT) optCount = 1;  // 仅返回
-            else if (settingsPage == SET_PAGE_SOFT_UPDATE) optCount = settingsUpdateAvailable ? 2 : 1;
+            else if (settingsPage == SET_PAGE_SOFT_UPDATE) optCount = 1;
 
             settingsSubSelected = (settingsSubSelected + 1) % optCount;
 
-            if (settingsPage == SET_PAGE_NET_STATUS) drawSettingsNetStatus(settingsSubSelected);
-            else if (settingsPage == SET_PAGE_SOFT_UPDATE) {
-              drawSettingsSoftwareUpdate(settingsSubSelected, CURRENT_VERSION,
-                                         settingsLatestVer.c_str(), settingsUpdateAvailable,
-                                         settingsSoftUpdateHintForDraw(),
-                                         settingsNotes.c_str());
-            } else if (settingsPage == SET_PAGE_ABOUT) {
+            if (settingsPage == SET_PAGE_ABOUT) {
               drawSettingsAbout(settingsSubSelected);
+            } else if (settingsPage == SET_PAGE_BLE_INFO) {
+              drawSettingsBleInfo(settingsSubSelected);
+            } else {
+              // 其它页面不再提供入口，统一回菜单
+              settingsPage = SET_PAGE_MENU;
+              settingsSubSelected = 0;
+              drawSettingsMenu(settingsSelected);
             }
           }
         } else {
@@ -436,8 +589,6 @@ static void handleButtons() {
               if (held >= SETTINGS_LONG_PRESS_PROGRESS_DELAY_MS) {
                 if (settingsPage == SET_PAGE_MENU) {
                   drawSettingsMenuClearLongPressProgress(settingsSelected);
-                } else if (settingsPage == SET_PAGE_SOFT_UPDATE && settingsUpdateAvailable) {
-                  drawSettingsSoftwareUpdateClearLongPressProgress(settingsSubSelected);
                 } else {
                   settingsShowCurrentPage();
                 }
@@ -448,8 +599,13 @@ static void handleButtons() {
               settingsShowCurrentPage();
             }
           }
+        #if CODY_ENABLE_WIFI_DEBUG
         } else if (!isWifiConfigPortalActive()) {
           if (!fired) refreshDisplayByMode();
+        #else
+        } else {
+          if (!fired) refreshDisplayByMode();
+        #endif
         }
       }
     }
@@ -470,84 +626,30 @@ static void handleButtons() {
       if (settingsPage == SET_PAGE_MENU) {
         if (settingsSelected == 0) { // 退出
           settingsExit();
-        } else if (settingsSelected == 1) {
-          settingsPage = SET_PAGE_NET_STATUS;
+        } else if (settingsSelected == 1) { // 蓝牙信息
+          settingsPage = SET_PAGE_BLE_INFO;
           settingsSubSelected = 0;
-          drawSettingsNetStatus(settingsSubSelected);
+          drawSettingsBleInfo(settingsSubSelected);
         } else if (settingsSelected == 2) {
-          startWifiConfigPortalFromSettings();
-        } else if (settingsSelected == 3) {
-          settingsPage = SET_PAGE_SOFT_UPDATE;
-          settingsSubSelected = 0;
-          settingsOtaFetched = false;
-          settingsOtaCheckFinished = false;
-          settingsLatestVer = "";
-          settingsNotes = "";
-          settingsUpdateAvailable = false;
-          // 先进入页面，版本检查放到后台任务执行，避免主线程卡死
-          settingsOtaState = (WiFi.status() == WL_CONNECTED) ? OTA_CHECKING : OTA_IDLE;
-          if (settingsOtaTaskHandle) {
-            // 若上一次任务异常残留，先尝试清理
-            vTaskDelete(settingsOtaTaskHandle);
-            settingsOtaTaskHandle = nullptr;
-          }
-          if (WiFi.status() == WL_CONNECTED) {
-            xTaskCreate(settingsOtaCheckTask, "ota_check", 8192, nullptr, 1, &settingsOtaTaskHandle);
-          } else {
-            settingsOtaCheckFinished = true;
-          }
-          drawSettingsSoftwareUpdate(settingsSubSelected, CURRENT_VERSION,
-                                     settingsLatestVer.c_str(), settingsUpdateAvailable,
-                                     settingsSoftUpdateHintForDraw(),
-                                     settingsNotes.c_str());
-        } else if (settingsSelected == 4) {
-          drawHoldProgressReset();
-          settingsFormatHoldActive = true;
-          settingsFormatHoldFullPhase = false;
-          settingsFormatHoldStartMs = millis();
-          drawSettingsEraseHoldProgress(0, SETTINGS_FORMAT_HOLD_MS);
-        } else if (settingsSelected == 5) {
           settingsPage = SET_PAGE_ABOUT;
           settingsSubSelected = 0;
           drawSettingsAbout(settingsSubSelected);
         }
-      } else if (settingsPage == SET_PAGE_NET_STATUS) {
-        // 0=返回 1=退出设置
-        settingsPage = SET_PAGE_MENU;
-        settingsSubSelected = 0;
-        drawSettingsMenu(settingsSelected);
-      } else if (settingsPage == SET_PAGE_SOFT_UPDATE) {
-        // 无更新：仅“返回”；有更新：0=返回 1=开始更新
-        const int optCount = settingsUpdateAvailable ? 2 : 1;
-        if (settingsSubSelected == 0) {
-          settingsPage = SET_PAGE_MENU;
+      } else if (settingsPage == SET_PAGE_BLE_INFO) {
+        if (cody_ble_has_trusted() && settingsSubSelected == 1) {
+          // 长按删除信任设备：清空绑定并断开蓝牙
+          cody_ble_clear_trusted_and_disconnect();
           settingsSubSelected = 0;
-          drawSettingsMenu(settingsSelected);
-        } else if (optCount > 1 && settingsSubSelected == 1) {
-          if (WiFi.status() != WL_CONNECTED) {
-            drawSettingsSoftwareUpdate(settingsSubSelected, CURRENT_VERSION,
-                                       settingsLatestVer.c_str(), settingsUpdateAvailable,
-                                       "未联网，无法更新",
-                                       settingsNotes.c_str());
-          } else if (!settingsOtaCheckFinished || !settingsOtaFetched) {
-            drawSettingsSoftwareUpdate(settingsSubSelected, CURRENT_VERSION,
-                                       settingsLatestVer.c_str(), settingsUpdateAvailable,
-                                       settingsSoftUpdateHintForDraw(),
-                                       settingsNotes.c_str());
-          } else if (!settingsUpdateAvailable) {
-            drawSettingsSoftwareUpdate(settingsSubSelected, CURRENT_VERSION,
-                                       settingsLatestVer.c_str(), settingsUpdateAvailable,
-                                       "",
-                                       settingsNotes.c_str());
-          } else {
-            startOtaUpdate();
-          }
+          drawSettingsBleInfo(settingsSubSelected);
         } else {
-          // optCount==1 时不应到这里；兜底返回
           settingsPage = SET_PAGE_MENU;
           settingsSubSelected = 0;
           drawSettingsMenu(settingsSelected);
         }
+      } else if (settingsPage == SET_PAGE_SOFT_UPDATE) {
+        settingsPage = SET_PAGE_MENU;
+        settingsSubSelected = 0;
+        drawSettingsMenu(settingsSelected);
       } else if (settingsPage == SET_PAGE_ABOUT) {
         // 关于本机：短按在“返回/退出设置”间切换，长按执行
         settingsPage = SET_PAGE_MENU;
@@ -557,7 +659,11 @@ static void handleButtons() {
       g_settingsLongPressThrottle = 0xFFFF;
     } else {
       // 未达长按阈值：满 SETTINGS_LONG_PRESS_PROGRESS_DELAY_MS 后，选中项背景从左向右作为进度
+      #if CODY_ENABLE_WIFI_DEBUG
       if (settingsActive && !settingsFormatHoldActive && !isWifiConfigPortalActive()) {
+      #else
+      if (settingsActive && !settingsFormatHoldActive) {
+      #endif
         if (held < SETTINGS_LONG_PRESS_PROGRESS_DELAY_MS) {
           // 延迟段内不绘进度，保持 drawSettingsMenu 的整块选中色
         } else if (settingsPage == SET_PAGE_MENU) {
@@ -568,13 +674,16 @@ static void handleButtons() {
             g_settingsLongPressThrottle = th;
             drawSettingsMenuLongPressProgress(settingsSelected, p);
           }
-        } else if (settingsPage == SET_PAGE_SOFT_UPDATE && settingsUpdateAvailable) {
-          const unsigned long win = BOOT_LONG_SETTINGS_MS - SETTINGS_LONG_PRESS_PROGRESS_DELAY_MS;
-          const float p = win > 0 ? (float)(held - SETTINGS_LONG_PRESS_PROGRESS_DELAY_MS) / (float)win : 1.f;
-          const uint16_t th = (uint16_t)((held - SETTINGS_LONG_PRESS_PROGRESS_DELAY_MS) / SETTINGS_LONG_PRESS_THROTTLE_MS);
-          if (th != g_settingsLongPressThrottle) {
-            g_settingsLongPressThrottle = th;
-            drawSettingsSoftwareUpdateLongPressProgress(settingsSubSelected, p);
+        } else if (settingsPage == SET_PAGE_BLE_INFO) {
+          // 连接说明页：对“返回/删除信任设备”绘制长按进度
+          if (cody_ble_has_trusted()) {
+            const unsigned long win = BOOT_LONG_SETTINGS_MS - SETTINGS_LONG_PRESS_PROGRESS_DELAY_MS;
+            const float p = win > 0 ? (float)(held - SETTINGS_LONG_PRESS_PROGRESS_DELAY_MS) / (float)win : 1.f;
+            const uint16_t th = (uint16_t)((held - SETTINGS_LONG_PRESS_PROGRESS_DELAY_MS) / SETTINGS_LONG_PRESS_THROTTLE_MS);
+            if (th != g_settingsLongPressThrottle) {
+              g_settingsLongPressThrottle = th;
+              drawSettingsBleInfoLongPressProgress(settingsSubSelected, p);
+            }
           }
         }
       }
@@ -585,14 +694,34 @@ static void handleButtons() {
 }
 
 void loop() {
+  #if CODY_ENABLE_WIFI_DEBUG
   server.handleClient();
+  #endif
+  cody_ble_loop();
+  ble_image::loop();
+  ble_ota::loop();
+
+  // 若从“配对确认态”恢复（比如手机断开/用户在小程序取消），立刻恢复之前 UI。
+  static bool s_prevPairPending = false;
+  const bool pendingNow = cody_ble_pair_pending();
+  if (s_prevPairPending && !pendingNow) {
+    g_blePairPromptDrawn = false;
+    g_blePairPromptPeer = "";
+    restoreMainScreenAfterToast();
+  }
+  s_prevPairPending = pendingNow;
 
   // 配网门户运行时先处理按键再跑 WiFiManager::process()（HTTP/DNS），避免「短按返回」被 process 拖慢
+  #if CODY_ENABLE_WIFI_DEBUG
   const bool portalAtStart = isWifiConfigPortalActive();
+  #else
+  const bool portalAtStart = false;
+  #endif
   if (portalAtStart) {
     handleButtons();
   }
 
+  #if CODY_ENABLE_WIFI_DEBUG
   serviceWifiConfigPortal();
   if (wifiConfigPortalConsumeSuccessExit()) {
     tft.fillScreen(ST77XX_BLACK);
@@ -614,9 +743,17 @@ void loop() {
   } else if (wifiConfigPortalConsumeRedrawFlag() && settingsActive) {
     drawSettingsMenu(settingsSelected);
   }
+  #endif
 
   if (!portalAtStart) {
     handleButtons();
+  }
+
+  // BLE 配对确认弹窗期间：已允许 handleButtons() 绘制/处理按键；
+  // 这里阻止后续逻辑刷新屏幕（避免被模式/提示条覆盖）。
+  if (cody_ble_pair_pending()) {
+    delay(5);
+    return;
   }
 
   if (settingsFormatHoldActive) {
@@ -664,6 +801,7 @@ void loop() {
     }
   }
 
+  #if CODY_ENABLE_WIFI_DEBUG
   if (isTryingNewWifi) {
     unsigned long elapsed = millis() - wifiTryStart;
     String tgt = targetSSID;
@@ -726,6 +864,7 @@ void loop() {
       esp_wifi_stop();
     }
   }
+  #endif
   
   const unsigned long nowToast = millis();
   const bool pcSerialToastActive = (nowToast < g_pcSerialToastEnd);
@@ -734,9 +873,13 @@ void loop() {
     // 设置页/按键按住时，不跑模式刷新
   } else if (displayMode == 1) {
     if (!pcSerialToastActive) {
-      struct tm timeinfo;
-      if (getLocalTime(&timeinfo, 0) && timeinfo.tm_min != lastMinute) {
-        drawClockFaceOnMinuteTick();
+      time_t now = time(nullptr);
+      if (now >= (time_t)1700000000) {
+        struct tm timeinfo;
+        localtime_r(&now, &timeinfo);
+        if (timeinfo.tm_min != lastMinute) {
+          drawClockFaceOnMinuteTick();
+        }
       }
     }
   }

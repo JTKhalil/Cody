@@ -5,6 +5,24 @@
 #include "include/storage/image_store.h"
 #include "include/render/display_render.h"
 
+#if !CODY_ENABLE_WIFI_DEBUG
+void handleBrightness() {}
+void handleFSSpace() {}
+void handleImageInfo() {}
+void handleGetImage() {}
+void handleImageDelete() {}
+void handleFormatFS() {}
+void handleUploadStart() {}
+void handleUploadChunk() {}
+void handleUploadFinish() {}
+void handleSetCurrent() {}
+void handleSlideshowConfig() {}
+void handleSetSlideshow() {}
+void handleSetInterval() {}
+void handleGetMode() {}
+void handleSetMode() {}
+
+#else
 void handleBrightness() {
   if (server.hasArg("v")) {
     int v = constrain(server.arg("v").toInt(), 0, 255);
@@ -256,4 +274,6 @@ void handleSetMode() {
   }
   server.send(400, "application/json", "{\"status\":\"error\"}");
 }
+
+#endif
 

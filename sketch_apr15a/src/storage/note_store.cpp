@@ -3,6 +3,14 @@
 #include "include/core/config_store.h"
 #include "include/render/display_render.h"
 
+#if !CODY_ENABLE_WIFI_DEBUG
+void handleNoteConfig() {}
+void handleSetNoteConfig() {}
+void handleGetNotes() {}
+void handleSaveNote() {}
+void handleDeleteNote() {}
+
+#else
 void handleNoteConfig() {
   String json = "{\"pinned\":" + String(pinnedNoteIndex) +
                 ",\"slideshow\":" + String(noteSlideshowEnabled ? "true" : "false") +
@@ -99,4 +107,6 @@ void handleDeleteNote() {
   if (displayMode == 2) displayNoteOnScreen();
   server.send(200, "application/json", "{\"status\":\"ok\"}");
 }
+
+#endif
 

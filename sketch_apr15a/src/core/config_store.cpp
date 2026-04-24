@@ -58,7 +58,7 @@ void loadConfig() {
 
   switchInterval = constrain(switchInterval, 3, 60);
   noteSwitchInterval = constrain(noteSwitchInterval, 3, 60);
-  if (currentImageIndex < 0 || currentImageIndex >= MAX_IMAGES) currentImageIndex = 0;
+  if (currentImageIndex < 0) currentImageIndex = 0;
   // 0=图片 1=时钟 2=笔记 3=表情
   if (displayMode < 0 || displayMode > 3) displayMode = 0;
 }

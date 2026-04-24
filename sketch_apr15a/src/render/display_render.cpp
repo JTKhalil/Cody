@@ -1,6 +1,7 @@
 #include "include/globals.h"
 #include "include/render/display_render.h"
 #include "include/render/expression_mode.h"
+#include "include/ble/cody_ble.h"
 
 // forward decls from other modules
 void loadSavedImage();
@@ -15,18 +16,38 @@ static const int kClockTimeBaselineY = 68;
 // 年月日、星期相对计算位置再整体上移（像素）
 static const int kClockCalendarLiftPx = 25;
 
+void drawTimeSyncingHint() {
+  tft.fillScreen(ST77XX_BLACK);
+  u8g2.setFont(u8g2_font_wqy16_t_gb2312);
+  u8g2.setFontMode(1);
+  u8g2.setForegroundColor(ST77XX_WHITE);
+  const char* msg1 = "已连接小程序";
+  const char* msg2 = "时间正在同步中...";
+  int w1 = u8g2.getUTF8Width(msg1);
+  int w2 = u8g2.getUTF8Width(msg2);
+  u8g2.setCursor((240 - w1) / 2, 112);
+  u8g2.print(msg1);
+  u8g2.setForegroundColor(0xAD55);
+  u8g2.setCursor((240 - w2) / 2, 140);
+  u8g2.print(msg2);
+  lastMinute = -1;
+  s_clockDom = -1;
+  s_clockMon = -1;
+  s_clockYear = -1;
+}
+
 void drawClockFace() {
-  struct tm timeinfo;
-  // 重要：getLocalTime() 默认会阻塞等待（可达数秒），会导致开机/切模式卡在上一屏（例如 Logo）。
-  // 这里使用 0ms 超时，确保时钟界面永不阻塞主循环；未校时则显示占位 UI。
-  const bool timeOk = getLocalTime(&timeinfo, 0);
+  // 重要：不要依赖 getLocalTime()（它与 SNTP 初始化强相关）。
+  // BLE/串口 sync_time 使用 settimeofday() 后，time() 已可用；这里用 epoch 阈值判断是否已校时。
+  time_t now = time(nullptr);
+  const bool timeOk = (now >= (time_t)1700000000); // ~2023
   if (!timeOk) {
     tft.fillScreen(ST77XX_BLACK);
     u8g2.setFont(u8g2_font_wqy16_t_gb2312);
     u8g2.setFontMode(1);
     u8g2.setForegroundColor(ST77XX_WHITE);
     const char* msg1 = "时间未校准";
-    const char* msg2 = "正在连接WiFi校时...";
+    const char* msg2 = cody_ble_is_connected() ? "已连接小程序，正在同步时间" : "请连接 BLE 小程序校时";
     int w1 = u8g2.getUTF8Width(msg1);
     int w2 = u8g2.getUTF8Width(msg2);
     u8g2.setCursor((240 - w1) / 2, 112);
@@ -39,6 +60,8 @@ void drawClockFace() {
     s_clockDom = -1;
     return;
   }
+  struct tm timeinfo;
+  localtime_r(&now, &timeinfo);
 
   // Mario 风格 UI（简化像素元素）：天空/云/水管/地面
   const uint16_t SKY = tft.color565(92, 156, 255);
@@ -150,8 +173,10 @@ void drawClockFace() {
 }
 
 void drawClockFaceOnMinuteTick() {
+  time_t now = time(nullptr);
+  if (now < (time_t)1700000000) return;
   struct tm timeinfo;
-  if (!getLocalTime(&timeinfo, 0)) return;
+  localtime_r(&now, &timeinfo);
 
   const int y = timeinfo.tm_year + 1900;
   const int mo = timeinfo.tm_mon + 1;
@@ -565,8 +590,9 @@ static void drawMenuItemWithLongPressProgress(int y, const char* text, bool sele
 }
 
 void drawSettingsMenuLongPressProgress(int selected, float progress01) {
-  static const char* items[] = {"退出", "网络状态", "配网设置", "软件更新", "抹掉所有内容和设置", "关于本机"};
-  constexpr int kN = 6;
+  // wxcody-ble 固件：移除 WiFi/Web 相关设置入口
+  static const char* items[] = {"退出", "连接说明", "关于本机"};
+  constexpr int kN = 3;
   if (selected < 0) selected = 0;
   if (selected > kN - 1) selected = kN - 1;
   if (!g_settingsMenuListValid) return;
@@ -578,8 +604,9 @@ void drawSettingsMenuLongPressProgress(int selected, float progress01) {
 }
 
 void drawSettingsMenuClearLongPressProgress(int selected) {
-  static const char* items[] = {"退出", "网络状态", "配网设置", "软件更新", "抹掉所有内容和设置", "关于本机"};
-  constexpr int kN = 6;
+  // wxcody-ble 固件：移除 WiFi/Web 相关设置入口
+  static const char* items[] = {"退出", "连接说明", "关于本机"};
+  constexpr int kN = 3;
   if (selected < 0) selected = 0;
   if (selected > kN - 1) selected = kN - 1;
   if (!g_settingsMenuListValid) {
@@ -612,6 +639,17 @@ void drawSettingsSoftwareUpdateLongPressProgress(int subSelected, float progress
   }
 }
 
+void drawSettingsBleInfoLongPressProgress(int subSelected, float progress01) {
+  if (subSelected < 0) subSelected = 0;
+  if (subSelected > 1) subSelected = 1;
+  // 只重绘当前选中的按钮，避免整屏闪烁
+  if (subSelected == 0) {
+    drawMenuItemWithLongPressProgress(168, "返回", true, progress01);
+  } else {
+    drawMenuItemWithLongPressProgress(198, "删除信任设备", true, progress01);
+  }
+}
+
 static void drawBottomHint(const char* leftHint, const char* rightHint) {
   tft.fillRect(0, 214, 240, 26, ST77XX_BLACK);
   u8g2.setFont(u8g2_font_wqy16_t_gb2312);
@@ -637,8 +675,9 @@ void drawPcSerialToastOverlay() {
 }
 
 void drawSettingsMenu(int selected) {
-  static const char* items[] = {"退出", "网络状态", "配网设置", "软件更新", "抹掉所有内容和设置", "关于本机"};
-  constexpr int kN = 6;
+  // wxcody-ble 固件：移除 WiFi/Web 相关设置入口
+  static const char* items[] = {"退出", "连接说明", "关于本机"};
+  constexpr int kN = 3;
   if (selected < 0) selected = 0;
   if (selected > kN - 1) selected = kN - 1;
   const int firstY = 44;
@@ -666,70 +705,108 @@ void drawSettingsMenu(int selected) {
   }
 }
 
-void drawSettingsNetStatus(int selected) {
-  drawSettingsHeader("网络状态");
-
-  const bool connected = (WiFi.status() == WL_CONNECTED);
-  const String ssid = connected ? WiFi.SSID() : String("未连接");
-  const String ip = connected ? WiFi.localIP().toString() : String("--");
-  const int rssi = connected ? WiFi.RSSI() : 0;
+void drawSettingsBleInfo(int selected) {
+  drawSettingsHeader("连接说明");
 
   u8g2.setFont(u8g2_font_wqy16_t_gb2312);
   u8g2.setFontMode(1);
 
-  u8g2.setForegroundColor(ST77XX_WHITE);
-  u8g2.setCursor(10, 66);
-  u8g2.print("状态: ");
-  u8g2.setForegroundColor(connected ? ST77XX_GREEN : ST77XX_RED);
-  u8g2.print(connected ? "已连接" : "未连接");
+  const String name = String(cody_ble_get_name());
+  const bool hasTrusted = cody_ble_has_trusted();
+  const String trustedName = String(cody_ble_get_trusted_name());
 
   u8g2.setForegroundColor(ST77XX_ORANGE);
-  u8g2.setCursor(10, 90);
-  u8g2.print("SSID:");
+  // 缩小行间距，给底部按钮留空间
+  u8g2.setCursor(10, 62);
+  u8g2.print("蓝牙名称");
   u8g2.setForegroundColor(ST77XX_WHITE);
-  u8g2.setCursor(70, 90);
-  u8g2.print(ssid);
+  u8g2.setCursor(10, 82);
+  u8g2.print(name);
 
-  u8g2.setForegroundColor(ST77XX_ORANGE);
-  u8g2.setCursor(10, 114);
-  u8g2.print("IP:");
-  u8g2.setForegroundColor(ST77XX_WHITE);
-  u8g2.setCursor(70, 114);
-  u8g2.print(ip);
+  if (!hasTrusted) {
+    u8g2.setForegroundColor(ST77XX_ORANGE);
+    u8g2.setCursor(10, 136);
+    u8g2.print("连接方法");
+    u8g2.setForegroundColor(ST77XX_WHITE);
+    u8g2.setCursor(10, 162);
+    u8g2.print("请在微信搜索“Cody控制台”");
+    u8g2.setCursor(10, 186);
+    u8g2.print("小程序进行连接和管理Cody");
 
-  u8g2.setForegroundColor(ST77XX_ORANGE);
-  u8g2.setCursor(10, 138);
-  u8g2.print("RSSI:");
-  u8g2.setForegroundColor(ST77XX_WHITE);
-  u8g2.setCursor(70, 138);
-  if (connected) {
-    u8g2.print(String(rssi));
-    u8g2.print(" dBm");
-  } else {
-    u8g2.print("--");
+    u8g2.setForegroundColor(0xAD55);
+    u8g2.setCursor(10, 236);
+    u8g2.print("短按返回");
+    return;
   }
+
+  // 已有信任设备：显示名称，隐藏连接方法；并提供“删除信任设备”按钮
+  u8g2.setForegroundColor(ST77XX_ORANGE);
+  u8g2.setCursor(10, 112);
+  u8g2.print("信任设备名称");
+  u8g2.setForegroundColor(ST77XX_WHITE);
+  u8g2.setCursor(10, 132);
+  u8g2.print(trustedName.length() ? trustedName.c_str() : "-");
+
+  // bottom actions (short press to switch, long press to execute)
+  if (selected < 0) selected = 0;
+  if (selected > 1) selected = 1;
+  drawMenuItem(168, "返回", selected == 0);
+  drawMenuItem(198, "删除信任设备", selected == 1);
+  drawBottomHint("短按切换", "长按执行");
+}
+
+void drawBlePairPrompt(const char* peer) {
+  invalidateSettingsMenuLayout();
+  tft.fillScreen(ST77XX_BLACK);
+  u8g2.setFont(u8g2_font_wqy16_t_gb2312);
+  u8g2.setFontMode(1);
+
+  u8g2.setForegroundColor(ST77XX_CYAN);
+  u8g2.setCursor(10, 24);
+  u8g2.print("蓝牙连接请求");
+  tft.drawFastHLine(10, 32, 220, 0x4208);
 
   u8g2.setForegroundColor(0xAD55);
-  if (connected) {
-    u8g2.setCursor(10, 162);
-    u8g2.print("相同网络下，用浏览器访问");
-    u8g2.setCursor(10, 186);
-    u8g2.print("上方 IP 可进入管理端");
-  } else {
-    u8g2.setCursor(10, 162);
-    u8g2.print("请前往「配网设置」");
-    u8g2.setCursor(10, 186);
-    u8g2.print("连接 WiFi");
-  }
+  u8g2.setCursor(10, 66);
+  u8g2.print("请求连接的设备名称");
+  u8g2.setForegroundColor(ST77XX_WHITE);
+  u8g2.setCursor(10, 90);
+  u8g2.print(peer ? peer : "-");
 
-  // 子页面选项：仅“返回” -> 不展示按钮，仅提示“短按返回”
-  (void)selected;
+  // 中部进度条（长按过程中更新）
+  tft.drawRect(30, 138, 180, 14, 0x4208);
+  tft.fillRect(31, 139, 178, 12, ST77XX_BLACK);
+  // 初始 0%
+  u8g2.setForegroundColor(0xAD55);
+  u8g2.setCursor(108, 174);
+  u8g2.print("0%");
+
+  // bottom hint
   tft.fillRect(0, 214, 240, 26, ST77XX_BLACK);
-  u8g2.setFont(u8g2_font_wqy16_t_gb2312);
-  u8g2.setFontMode(1);
   u8g2.setForegroundColor(0xAD55);
   u8g2.setCursor(10, 236);
-  u8g2.print("短按返回");
+  u8g2.print("短按拒绝 / 长按允许");
+}
+
+void drawBlePairProgress(uint8_t pct) {
+  if (pct > 100) pct = 100;
+  // 仅更新进度条区域，避免闪屏
+  const int x = 31, y = 139, w = 178, h = 12;
+  const int fillW = (int)((w * (int)pct) / 100);
+  tft.fillRect(x, y, w, h, ST77XX_BLACK);
+  if (fillW > 0) {
+    tft.fillRect(x, y, fillW, h, tft.color565(130, 235, 170));
+  }
+  // 百分比文字：只擦一小条文本区
+  tft.fillRect(92, 162, 60, 18, ST77XX_BLACK);
+  u8g2.setFont(u8g2_font_wqy16_t_gb2312);
+  u8g2.setFontMode(1);
+  u8g2.setForegroundColor(0xAD55);
+  char buf[8];
+  snprintf(buf, sizeof(buf), "%u%%", (unsigned)pct);
+  int tw = u8g2.getUTF8Width(buf);
+  u8g2.setCursor((240 - tw) / 2, 176);
+  u8g2.print(buf);
 }
 
 static int utf8FirstCharLen(uint8_t c) {
@@ -873,6 +950,17 @@ void drawSettingsSoftwareUpdate(int selected, const char* curVer, const char* la
 
 void drawSettingsAbout(int selected) {
   drawSettingsHeader("关于本机");
+
+  // 右上角：版本号
+  u8g2.setFont(u8g2_font_wqy12_t_chinese3);
+  u8g2.setFontMode(1);
+  u8g2.setForegroundColor(0xAD55);
+  {
+    const String v = String("v") + String(CURRENT_VERSION);
+    int w = u8g2.getUTF8Width(v.c_str());
+    u8g2.setCursor(240 - 10 - w, 24);
+    u8g2.print(v);
+  }
 
   // 存储信息
   size_t total = LittleFS.totalBytes();

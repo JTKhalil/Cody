@@ -1,6 +1,24 @@
 #include "include/globals.h"
 #include "include/net/ota_update.h"
 
+#if !CODY_ENABLE_WIFI_DEBUG
+int compareVersionParts(const char* a, const char* b) {
+  (void)a;
+  (void)b;
+  return 0;
+}
+
+bool fetchRemoteVersionInfo(String& outLatest, String& outNotes) {
+  outLatest = "";
+  outNotes = "";
+  return false;
+}
+
+void handleOtaInfo() {}
+void handleDoUpdate() {}
+void startOtaUpdate() {}
+
+#else
 // 由 .ino 提供
 extern const char* URL_VERSION;
 extern const char* URL_BIN;
@@ -159,3 +177,4 @@ void handleDoUpdate() {
   startOtaUpdate();
 }
 
+#endif

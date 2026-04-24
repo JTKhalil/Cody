@@ -3,6 +3,8 @@
 void drawClockFace();
 /// 时钟模式：分钟变化时调用；尽量局部重绘时间，跨日则整屏重画，减少每分钟闪屏。
 void drawClockFaceOnMinuteTick();
+// BLE 小程序同步时间时的提示页
+void drawTimeSyncingHint();
 void refreshDisplayByMode();
 void printWrappedUTF8(String text, int x, int y, int maxWidth);
 void displayNoteOnScreen();
@@ -26,10 +28,14 @@ void drawSettingsMenuClearLongPressProgress(int selected);
 void drawSettingsSoftwareUpdateClearLongPressProgress(int subSelected);
 /** 软件更新页双按钮时：同上 */
 void drawSettingsSoftwareUpdateLongPressProgress(int subSelected, float progress01);
-void drawSettingsNetStatus(int selected);
+/** 连接说明页双按钮：subSelected=0(返回)/1(删除信任设备)，绘制长按进度（0..1） */
+void drawSettingsBleInfoLongPressProgress(int subSelected, float progress01);
 void drawSettingsSoftwareUpdate(int selected, const char* curVer, const char* latestVer, bool available, const char* hint,
                                 const char* updateNotes);
 void drawSettingsAbout(int selected);
+void drawSettingsBleInfo(int selected);
+void drawBlePairPrompt(const char* peer);
+void drawBlePairProgress(uint8_t pct);
 
 // 电脑已连接：底部短暂提示条（叠画在现有画面上）
 void drawPcSerialToastOverlay();

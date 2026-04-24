@@ -1,6 +1,12 @@
 #include "include/globals.h"
 #include "include/storage/image_store.h"
 #include "include/core/config_store.h"
+#include <vector>
+#include <algorithm>
+
+static constexpr size_t kImageBytes = 240u * 240u * 2u; // RGB565
+
+static std::vector<int> g_imageSlots;
 
 static void setBacklight(int v) {
   v = constrain(v, 0, 255);
@@ -29,17 +35,37 @@ static void displayImageWithTransition(int slot) {
 }
 
 void scanImages() {
-  imageCount = 0;
-  for (int i = 0; i < MAX_IMAGES; i++) {
-    String path = "/img" + String(i) + ".bin";
-    if (LittleFS.exists(path)) {
-      File f = LittleFS.open(path, "r");
-      size_t sz = f.size();
+  g_imageSlots.clear();
+
+  File root = LittleFS.open("/");
+  if (root) {
+    while (true) {
+      File f = root.openNextFile();
+      if (!f) break;
+      String name = String(f.name());
+      const size_t sz = f.size();
       f.close();
-      if (sz == 115200) imageCount++;
-      else LittleFS.remove(path);
+
+      // Some cores return names without a leading '/'.
+      if (!name.startsWith("/")) name = "/" + name;
+      if (!name.startsWith("/img") || !name.endsWith(".bin")) continue;
+      if (sz != kImageBytes) {
+        LittleFS.remove(name);
+        continue;
+      }
+      const String numStr = name.substring(4, name.length() - 4);
+      const int slot = numStr.toInt();
+      if (slot < 0 || slot > 250) continue;
+      g_imageSlots.push_back(slot);
     }
+    root.close();
   }
+
+  // sort + unique
+  std::sort(g_imageSlots.begin(), g_imageSlots.end());
+  g_imageSlots.erase(std::unique(g_imageSlots.begin(), g_imageSlots.end()), g_imageSlots.end());
+
+  imageCount = (int)g_imageSlots.size();
 }
 
 void displayImageFromFile(int slot) {
@@ -80,14 +106,30 @@ void loadSavedImage() {
 
 void nextImage() {
   if (imageCount <= 1) return;
-  int startIndex = currentImageIndex;
-  do {
-    currentImageIndex = (currentImageIndex + 1) % MAX_IMAGES;
-    if (LittleFS.exists("/img" + String(currentImageIndex) + ".bin")) {
-      if (displayMode == 0) displayImageWithTransition(currentImageIndex);
-      lastImageSwitch = millis();
-      saveConfig();
-      break;
-    }
-  } while (currentImageIndex != startIndex);
+  if (g_imageSlots.empty()) return;
+
+  int curPos = -1;
+  for (int i = 0; i < (int)g_imageSlots.size(); i++) {
+    if (g_imageSlots[i] == currentImageIndex) { curPos = i; break; }
+  }
+  if (curPos < 0) curPos = 0;
+  const int nextPos = (curPos + 1) % (int)g_imageSlots.size();
+  currentImageIndex = g_imageSlots[nextPos];
+  if (displayMode == 0) displayImageWithTransition(currentImageIndex);
+  lastImageSwitch = millis();
+  saveConfig();
+}
+
+bool image_has_slot(int slot) {
+  if (slot < 0) return false;
+  return LittleFS.exists("/img" + String(slot) + ".bin");
+}
+
+int image_next_free_slot() {
+  // Find the smallest non-negative slot id not used.
+  // Slot is uint8 in BLE payload, keep <= 250.
+  for (int s = 0; s <= 250; s++) {
+    if (!image_has_slot(s)) return s;
+  }
+  return -1;
 }

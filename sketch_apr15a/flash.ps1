@@ -8,7 +8,7 @@ param(
 $ErrorActionPreference = "Stop"
 $SketchDir = $PSScriptRoot
 # 单引号赋值；传参用 "--fqbn=$Fqbn" 避免逗号被 PowerShell 拆参
-$Fqbn = 'esp32:esp32:esp32c3:CDCOnBoot=cdc,CPUFreq=160,FlashFreq=80,FlashMode=dio,FlashSize=4M,JTAGAdapter=default,PartitionScheme=min_spiffs,UploadSpeed=256000,EraseFlash=none,ZigbeeMode=default,DebugLevel=none'
+$Fqbn = 'esp32:esp32:esp32c3:CDCOnBoot=cdc,CPUFreq=160,FlashFreq=80,FlashMode=dio,FlashSize=4M,JTAGAdapter=default,PartitionScheme=huge_app,UploadSpeed=256000,EraseFlash=none,ZigbeeMode=default,DebugLevel=none'
 
 if (-not $Port) {
   $json = arduino-cli board list --format json 2>&1 | Out-String

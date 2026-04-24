@@ -1,19 +1,24 @@
 #pragma once
 
+#include "feature_flags.h"
+
 #include <Arduino.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_ST7789.h>
 #include <SPI.h>
-#include <WebServer.h>
-#include <WiFiManager.h>
 #include <LittleFS.h>
 #include <time.h>
 #include <sys/time.h>
-#include <HTTPUpdate.h>
-#include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
 #include <U8g2_for_Adafruit_GFX.h>
-#include <esp_wifi.h>
+
+#if CODY_ENABLE_WIFI_DEBUG
+  #include <WebServer.h>
+  #include <WiFiManager.h>
+  #include <HTTPUpdate.h>
+  #include <WiFiClientSecure.h>
+  #include <esp_wifi.h>
+#endif
 
 // 工程公共版本号
 #include "version.h"
@@ -47,7 +52,10 @@
 
 extern Adafruit_ST7789 tft;
 extern U8G2_FOR_ADAFRUIT_GFX u8g2;
+
+#if CODY_ENABLE_WIFI_DEBUG
 extern WebServer server;
+#endif
 
 extern int lastMinute;
 extern int displayMode;
@@ -67,6 +75,9 @@ extern int noteSwitchInterval;
 extern int currentNoteDisplayIndex;
 extern unsigned long lastNoteSwitch;
 
+// 时间是否已通过 BLE/串口校准（sync_time）
+extern volatile bool g_timeCalibrated;
+
 extern bool isUploading;
 extern int uploadY;
 extern int uploadingSlot;
@@ -78,10 +89,12 @@ extern String serialBuffer;
 // 背光亮度（0-255，逻辑值；实际 PWM 可能做非线性映射）
 extern int backlightValue;
 
+#if CODY_ENABLE_WIFI_DEBUG
 // WiFi 回退保护与状态变量
 extern bool isTryingNewWifi;
 extern String targetSSID;
 extern String fallbackSSID;
 extern String fallbackPSK;
 extern unsigned long wifiTryStart;
+#endif
 

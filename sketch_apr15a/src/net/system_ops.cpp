@@ -2,9 +2,22 @@
 #include "include/net/system_ops.h"
 #include "include/core/config_store.h"
 #include "include/render/display_render.h"
-#include <WiFi.h>
-#include <esp_wifi.h>
+#if CODY_ENABLE_WIFI_DEBUG
+  #include <WiFi.h>
+  #include <esp_wifi.h>
+#endif
 
+#if !CODY_ENABLE_WIFI_DEBUG
+void handleResetSystem() {}
+void startWifiConfigPortalFromSettings() {}
+void serviceWifiConfigPortal() {}
+bool isWifiConfigPortalActive() { return false; }
+void wifiConfigPortalStopFromUser() {}
+bool wifiConfigPortalConsumeRedrawFlag() { return false; }
+bool wifiConfigPortalConsumeSuccessExit() { return false; }
+void factoryResetWifiCredentials() {}
+
+#else
 static WiFiManager g_wmPortal;
 static bool g_portalFromSettings = false;
 static bool g_needRedrawAfterPortal = false;
@@ -151,3 +164,5 @@ bool wifiConfigPortalConsumeSuccessExit() {
   g_portalSuccessNeedExit = false;
   return true;
 }
+
+#endif

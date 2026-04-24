@@ -1,6 +1,12 @@
 #pragma once
 
-#include <WiFiManager.h>
+#include "include/feature_flags.h"
+
+// 注意：为降低固件体积，WiFi/Web 调试默认关闭（CODY_ENABLE_WIFI_DEBUG=0）。
+// 当关闭时，这个头文件不应引入任何 WiFi 相关库，否则 Arduino builder 仍会把库编进来。
+#if CODY_ENABLE_WIFI_DEBUG
+  #include <WiFiManager.h>
+#endif
 
 void handleResetSystem();
 

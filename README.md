@@ -1,206 +1,106 @@
-## Cody（ESP32‑C3 屏幕控制系统）
+## Cody（ESP32-C3 固件）
 
-该项目由两部分组成：
+本目录是 **Cody 设备端固件**（Arduino/ESP32），主工程位于 `sketch_apr15a/`。
 
-- **设备端固件**：`sketch_apr15a/`（ESP32‑C3 + ST7789 240×240 屏幕）
-- **PC 串口控制台**：`index.html`（浏览器 WebSerial，与设备端 JSON 串口协议通信）
+### 主要能力
 
----
+- **显示/UI**：240×240 ST7789（`Adafruit_ST7789` + `U8g2_for_Adafruit_GFX`），支持多种显示模式（图片/时钟/笔记/表情）。
+- **存储**：`LittleFS` 保存图片、笔记、配置与 BLE 绑定信息。
+- **协议层**：
+  - **JSONL 控制协议**（一行一个 JSON，以 `\n` 结尾）。实现见 `sketch_apr15a/src/protocol/serial_protocol.cpp`。
+  - **二进制分帧协议**（用于图片/OTA 等大吞吐数据），实现见 `sketch_apr15a/src/ble/*` 与 `sketch_apr15a/include/ble/ble_proto.h`。
+- **BLE（微信小程序直连）**：
+  - GATT Service/Char UUID 固定为：
+    - Service：`0000C0DE-0000-1000-8000-00805F9B34FB`
+    - RX（写入）：`0000C0D1-0000-1000-8000-00805F9B34FB`
+    - TX（Notify）：`0000C0D2-0000-1000-8000-00805F9B34FB`
+  - 广播名形如 `Cody-XXXXXX`（取 BT MAC 后 3 字节），实现见 `sketch_apr15a/src/ble/cody_ble.cpp`。
+  - **首次连接需要设备端确认**：固件会进入 `pair_pending` 状态，小程序需先发 `{"cmd":"pair_hello","name":"...","id":"..."}`；用户在设备上按键确认后才会放行其它控制命令。
+  - **单设备绑定**：以小程序上报的 `clientId` 为“信任设备”标识（避免手机 BLE 隐私地址变化）。
+- **OTA（通过 BLE 推送固件）**：实现见 `sketch_apr15a/src/ble/ble_ota.cpp`（`OTA_BEGIN` / `OTA_CHUNK` / `OTA_FINISH`）。
+- **（可选）WiFi/Web 调试**：默认关闭以适配 4MB Flash 的更小分区方案。开关见 `sketch_apr15a/include/feature_flags.h`：`CODY_ENABLE_WIFI_DEBUG`。
 
-## 目录结构（按功能分组）
+### 目录结构
 
-### 设备端（`sketch_apr15a/`）
+- `sketch_apr15a/`
+  - `sketch_apr15a.ino`：主入口（`setup()/loop()`），初始化显示、LittleFS、协议、BLE、（可选）WiFi/Web
+  - `src/ble/`：BLE GATT、图片传输、BLE OTA、二进制协议
+  - `src/protocol/serial_protocol.cpp`：JSON 命令分发与响应（同时转发到 BLE notify）
+  - `include/`：各模块头文件（`globals.h`、`version.h`、`feature_flags.h` 等）
+  - `flash.ps1`：Windows 一键编译+烧录脚本（基于 `arduino-cli`）
+  - `partitions.csv`：分区表示例（如双 OTA 槽 + spiffs）
+- `docs/`：与 WXCody（小程序管理端）配套的设计/计划文档
 
-- **入口**
-  - `sketch_apr15a/sketch_apr15a.ino`：全局状态 + `setup()` / `loop()` + HTTP 路由注册
-  - `sketch_apr15a/partitions.csv`：自定义分区表（用于 `min_spiffs` 场景下扩大 APP）
+### 环境准备
 
-- **公共头文件**
-  - `sketch_apr15a/include/globals.h`：全局对象/状态的 `extern` 声明、依赖库统一引入、引脚宏
-  - `sketch_apr15a/include/version.h`：`CURRENT_VERSION`
-  - `sketch_apr15a/include/util_hex.h`：HEX 编解码小工具（上传/串口传输用）
+- **Arduino CLI**：确保 `arduino-cli` 已安装并在 PATH（或按脚本/命令写死的路径）。
+- **ESP32 core**：需要安装 Arduino-ESP32 平台（含 `esp32c3`）。
+- **依赖库**：项目使用到（至少）：
+  - `Adafruit_GFX`
+  - `Adafruit_ST7789`
+  - `U8g2_for_Adafruit_GFX`
+  - `ArduinoJson`
+  - `NimBLE-Arduino`（或等价 NimBLE 包）
 
-- **核心配置**
-  - `sketch_apr15a/include/core/config_store.h`
-  - `sketch_apr15a/src/core/config_store.cpp`
-  - 功能：保存/读取配置（当前图片槽位、轮播间隔、显示模式、置顶笔记等）、清理临时上传文件、打印 FS 空间
+> 具体依赖版本以你本机 Arduino 库管理器/arduino-cli 安装的为准；若编译报缺库，按报错提示补齐即可。
 
-- **渲染与显示**
-  - `sketch_apr15a/include/render/display_render.h`
-  - `sketch_apr15a/src/render/display_render.cpp`
-  - 功能：时钟界面、笔记排版（UTF‑8 自动换行）、按模式刷新屏幕
-  - `sketch_apr15a/include/render/expression_mode.h`
-  - `sketch_apr15a/src/render/expression_mode.cpp`
-  - 功能：表情模式（非阻塞状态机动画）、中文提示使用 U8g2 字体渲染
+### 编译与烧录（Windows）
 
-- **存储（LittleFS）**
-  - `sketch_apr15a/include/storage/image_store.h`
-  - `sketch_apr15a/src/storage/image_store.cpp`
-  - 功能：图片槽位扫描、从 LittleFS 读取 RGB565 并显示、轮播下一张切换逻辑
+#### 方式 A：使用脚本（推荐）
 
-  - `sketch_apr15a/include/storage/note_store.h`
-  - `sketch_apr15a/src/storage/note_store.cpp`
-  - 功能：笔记的 HTTP API（增删改查、置顶、轮播配置持久化触发刷新）
-
-- **网络/HTTP**
-  - `sketch_apr15a/include/net/http_handlers.h`
-  - `sketch_apr15a/src/net/http_handlers.cpp`
-  - 功能：图片上传（分块）、删除、轮播配置、亮度、模式切换、FS 空间查询等
-
-  - `sketch_apr15a/include/net/system_ops.h`
-  - `sketch_apr15a/src/net/system_ops.cpp`
-  - 功能：配网失败提示 UI（WiFiManager 回调）、恢复出厂（清除配网并重启）
-
-  - `sketch_apr15a/include/net/ota_update.h`
-  - `sketch_apr15a/src/net/ota_update.cpp`
-  - 功能：OTA 信息查询、固件下载升级、进度条显示
-
-- **串口协议**
-  - `sketch_apr15a/include/protocol/serial_protocol.h`
-  - `sketch_apr15a/src/protocol/serial_protocol.cpp`
-  - 功能：JSON 命令解析与回包（PC 控制台依赖）
-
-### PC 端（`index.html`）
-
-- 通过 **WebSerial** 打开设备串口（115200）
-- 与设备端通过 **一行一条 JSON（以 `\\n` 结尾）** 的协议通信
-- 包含：模式切换、图床同步/上传、笔记管理、亮度、WiFi 切换、OTA 触发、FS 空间展示等
-
----
-
-## 设备端功能清单
-
-- **四种显示模式**
-  - **图片模式**：最多 4 个槽位，支持轮播/手动切换、支持设置轮播间隔
-  - **时钟模式**：NTP 校时后显示时间/日期/星期
-  - **笔记模式**：从 LittleFS 读取笔记，支持置顶与轮播
-  - **表情模式**：多种可爱动作随机播放（非阻塞），提示文字使用 U8g2 中文字体避免乱码
-
-- **模式切换过渡**
-  - 模式切换时采用背光淡出/淡入，减少闪屏
-
-- **Web 控制面板（设备端 HTTP Server）**
-  - 内置页面（固件中 PROGMEM）
-  - 图片上传/替换/删除、笔记增删改、亮度调节、OTA、格式化、恢复出厂等
-
-- **LittleFS 存储**
-  - `/img{0..3}.bin`：240×240 RGB565（115200 字节）
-  - `/notes.json`：笔记数组（带时间）
-  - `/config.txt`：运行配置
-  - `/tmp_upload.bin`：上传临时文件（完成后 rename）
-
-- **OTA 升级**
-  - 读取版本文件、下载固件并刷写
-  - 屏幕显示进度条与提示文案
-
-- **WiFi 配网与回退保护**
-  - 普通启动：尝试连接历史 WiFi，失败则进入 WiFiManager 配网热点
-  - 串口设置 WiFi：尝试新网络失败会回退旧网络（并校验目标 SSID，避免“假连接”）
-
----
-
-## 串口协议（核心约定）
-
-- **请求**：PC → 设备，`JSON + \\n`
-- **响应**：设备 → PC，单行 JSON（包含 `cmd` 与 `status`）
-
-常用命令示例：
-
-```json
-{"cmd":"wifi_status"}
-```
-
-```json
-{"cmd":"get_mode"}
-```
-
-```json
-{"cmd":"set_mode","mode":1}
-```
-
----
-
-## 编译与烧录（Arduino CLI / ESP32‑C3）
-
-已在本项目中验证的板卡参数（与 IDE 截图一致）：
-
-- FQBN 基础：`esp32:esp32:esp32c3`
-- 分区：`PartitionScheme=min_spiffs`（Minimal SPIFFS，1.9MB APP）
-- 串口：通常为 `COM5`（以 `board list` 输出为准）
-
-### 编译
+在 `sketch_apr15a/` 目录运行：
 
 ```powershell
-& "C:\Program Files\Arduino CLI\arduino-cli.exe" compile `
-  --fqbn "esp32:esp32:esp32c3:CDCOnBoot=cdc,CPUFreq=160,FlashFreq=80,FlashMode=dio,FlashSize=4M,JTAGAdapter=default,PartitionScheme=min_spiffs,UploadSpeed=921600,EraseFlash=none,ZigbeeMode=default,DebugLevel=none" `
-  "d:\mochi\Cody\sketch_apr15a"
+.\flash.ps1
+# 或指定串口
+.\flash.ps1 -Port COM6
 ```
 
-### 烧录
+脚本会调用 `arduino-cli compile` + `arduino-cli upload`，FQBN 在脚本内定义（见 `sketch_apr15a/flash.ps1`）。
+
+#### 方式 B：手动使用 arduino-cli
+
+1) 查找端口：
 
 ```powershell
-& "C:\Program Files\Arduino CLI\arduino-cli.exe" upload `
-  -p COM5 `
-  --fqbn "esp32:esp32:esp32c3:CDCOnBoot=cdc,CPUFreq=160,FlashFreq=80,FlashMode=dio,FlashSize=4M,JTAGAdapter=default,PartitionScheme=min_spiffs,UploadSpeed=921600,EraseFlash=none,ZigbeeMode=default,DebugLevel=none" `
-  "d:\mochi\Cody\sketch_apr15a"
+arduino-cli board list
 ```
 
-> 提示：烧录时若提示 `port is busy`，请关闭浏览器 WebSerial/串口监视器/串口助手等占用 COM 口的软件。
+2) 编译（FQBN 以你实际脚本/板卡菜单为准）：
 
----
+```powershell
+arduino-cli compile --fqbn "<YOUR_FQBN>" "d:\mochi\CodyProject\Cody\sketch_apr15a"
+```
 
-## 表情模式动作清单（当前随机池）
+3) 烧录：
 
-基础表情（0~15）：
+```powershell
+arduino-cli upload -p COM5 --fqbn "<YOUR_FQBN>" "d:\mochi\CodyProject\Cody\sketch_apr15a"
+```
 
-- 0 眨眼
-- 1 开心
-- 2 可怜巴巴
-- 3 左右张望
-- 4 右眨眼
-- 5 晕眩
-- 6 左眨眼
-- 7 害羞侧看
-- 8 思考
-- 9 注意到/震惊
-- 10 困了
-- 11 困惑
-- 12 兴奋抖动
-- 13 傲娇/不屑
-- 14 左右歪头
-- 15 睡觉（10 分钟冷却）
+### 常用协议（给 WXCody/调试用）
 
-道具/互动（16~30）：
+#### JSONL（控制面）
 
-- 16 唱歌
-- 17 吹风车
-- 18 送花
-- 20 看书学习
-- 21 吃吃吃
-- 22 打游戏
-- 23 健身举铁
-- 24 拍照
-- 26 咖啡放松
-- 27 绘画
-- 29 派对
+发送（每行一个 JSON，以 `\n` 结尾）：
 
-新增可爱动作（31~40）：
+- `{"cmd":"get_mode"}`
+- `{"cmd":"set_mode","mode":0}`（0~3）
+- `{"cmd":"image_info"}`
+- `{"cmd":"get_notes"}`
+- `{"cmd":"fs_space"}`
+- `{"cmd":"bright","v":255}`
+- `{"cmd":"format_fs"}`
+- `{"cmd":"reset_system"}`
+- `{"cmd":"ota_info"}`
+- `{"cmd":"sync_time","timestamp":<unix_seconds>}`
 
-- 32 大笑
-- 33 生气
-- 34 呜呜哭
-- 35 眼里有光
-- 37 给你点赞
-- 38 夸张震惊
-- 39 眼罩睡（省电模式）
+> 设备端会对每个 `cmd` 回同名响应，例如 `{"cmd":"get_mode","status":"ok","mode":1}`。
 
-已从随机池移除（仍可能保留代码但不会随机触发）：
+#### 二进制分帧（图片/OTA）
 
-- 19 吹泡泡
-- 25 魔法
-- 28 钓鱼
-- 30 音乐律动
-- 31 爱心暴击
-- 36 挥手打招呼
-- 40 爱心雨
+二进制帧由 `MAGIC(0xC0,0xDE)` 开头，带 CRC16；小程序端实现见 `WXCody/services/proto_bin.ts`，设备端实现见 `sketch_apr15a/include/ble/ble_proto.h`。
 
+### 版本号
+
+固件版本定义在 `sketch_apr15a/include/version.h`（`CURRENT_VERSION`）。小程序控制台会读取 `ota_info` 与远端 `version.txt` 对比提示升级。
