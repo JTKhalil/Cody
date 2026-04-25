@@ -286,7 +286,12 @@ void handdraw_clear_ram() {
   handdraw_ensure_alloc();
   s_persist_pending = false;
   s_has_drawing = false;
-  guess_game_reset();
+  // 清屏：仅清掉手绘缓冲。
+  // - 游戏进行中：保留倒计时，不打断本局
+  // - 已揭晓答案：清掉答案与冻结倒计时，允许继续绘画/开新局
+  if (guess_game_is_showing_answer()) {
+    guess_game_reset();
+  }
   handdraw_fill_solid_bg();
   s_buffer_inited = true;
   handdraw_present_framebuffer();
