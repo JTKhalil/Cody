@@ -106,7 +106,7 @@ arduino-cli upload "d:\mochi\CodyProject\Cody\sketch_apr15a" -p COM5 "--fqbn=$Fq
 
 #### 二进制分帧（图片/OTA）
 
-二进制帧由 `MAGIC(0xC0,0xDE)` 开头，带 CRC16；小程序端实现见 `WXCody/services/proto_bin.ts`，设备端实现见 `sketch_apr15a/include/ble/ble_proto.h`。
+二进制帧由 `MAGIC(0xC0,0xDE)` 开头，带 CRC16；小程序端实现见 `WXCody/services/proto_bin.js`（源码同名 `.ts`），设备端实现见 `sketch_apr15a/include/ble/ble_proto.h`。
 
 ### 版本号
 
