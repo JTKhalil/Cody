@@ -14,10 +14,23 @@ static char s_word[96] = {0};
 /// 游戏结束（手动或到时）后右上角保留的剩余秒数；-1 表示不显示暂停态
 static int s_timer_frozen_sec = -1;
 
-// 右上角倒计时区域（与手绘内容分离，每笔后重绘）
-static constexpr int kTimerX = 158;
-static constexpr int kTimerW = 82;
-static constexpr int kTimerH = 26;
+// 右上角倒计时：背景条宽度随文字变化，减少遮挡画区；擦除区与上一帧取并集避免变窄留残影
+static int s_timer_bg_x = 0;
+static int s_timer_bg_y = 0;
+static int s_timer_bg_w = 0;
+static int s_timer_bg_h = 0;
+static bool s_timer_bg_valid = false;
+
+static inline int i_min(int a, int b) {
+  return a < b ? a : b;
+}
+static inline int i_max(int a, int b) {
+  return a > b ? a : b;
+}
+
+static void guess_invalidate_timer_bg() {
+  s_timer_bg_valid = false;
+}
 
 // 底部揭晓：背景高度随文字行数收缩，文字基线贴屏幕下沿（y=239 为末行像素行）
 
@@ -107,15 +120,48 @@ static void format_mmss(char* out, size_t nout, int total_sec) {
 }
 
 static void paint_timer_digits(int total_sec) {
-  uint16_t bg = handdraw_get_background_rgb565();
-  tft.fillRect(kTimerX, 0, kTimerW, kTimerH, bg);
   char buf[8];
   format_mmss(buf, sizeof(buf), total_sec);
   u8g2.setFont(u8g2_font_wqy12_t_chinese3);
   u8g2.setFontMode(1);
   u8g2.setForegroundColor(ST77XX_WHITE);
-  int tw = u8g2.getUTF8Width(buf);
-  u8g2.setCursor(240 - tw - 4, 18);
+  const int tw = u8g2.getUTF8Width(buf);
+  const int baselineY = 18;
+  const int tx = 240 - tw - 4;
+  const int ascent = u8g2.getFontAscent();
+  const int descent = u8g2.getFontDescent();
+  const int padX = 2;
+  const int padY = 2;
+  int yTop = baselineY - ascent - padY;
+  if (yTop < 0) yTop = 0;
+  const int boxH = (ascent - descent) + 2 * padY;
+  const int rx = tx - padX;
+  const int rw = tw + 2 * padX;
+  const int ry = yTop;
+  const int rh = boxH;
+
+  uint16_t bg = handdraw_get_background_rgb565();
+  int clearX = rx;
+  int clearY = ry;
+  int clearW = rw;
+  int clearH = rh;
+  if (s_timer_bg_valid) {
+    clearX = i_min(rx, s_timer_bg_x);
+    clearY = i_min(ry, s_timer_bg_y);
+    const int clearR = i_max(rx + rw, s_timer_bg_x + s_timer_bg_w);
+    const int clearB = i_max(ry + rh, s_timer_bg_y + s_timer_bg_h);
+    clearW = clearR - clearX;
+    clearH = clearB - clearY;
+  }
+  tft.fillRect(clearX, clearY, clearW, clearH, bg);
+
+  s_timer_bg_x = rx;
+  s_timer_bg_y = ry;
+  s_timer_bg_w = rw;
+  s_timer_bg_h = rh;
+  s_timer_bg_valid = true;
+
+  u8g2.setCursor(tx, baselineY);
   u8g2.print(buf);
 }
 
@@ -168,6 +214,7 @@ static void draw_answer_overlay() {
 }
 
 void guess_game_start(const char* word_utf8, uint16_t seconds) {
+  guess_invalidate_timer_bg();
   s_playing = false;
   s_show_answer = false;
   memset(s_word, 0, sizeof(s_word));
@@ -221,6 +268,7 @@ bool guess_game_skip_empty_hint() {
 }
 
 void guess_game_reset() {
+  guess_invalidate_timer_bg();
   s_playing = false;
   s_show_answer = false;
   s_timer_frozen_sec = -1;

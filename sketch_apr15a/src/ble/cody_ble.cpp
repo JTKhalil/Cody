@@ -12,6 +12,8 @@
 #include "include/globals.h"
 #include "include/protocol/serial_protocol.h"
 #include "include/ble/ble_proto.h"
+#include "include/render/guess_game.h"
+#include "include/render/handdraw.h"
 
 static constexpr const char* kServiceUuid = "0000C0DE-0000-1000-8000-00805F9B34FB";
 static constexpr const char* kRxUuid = "0000C0D1-0000-1000-8000-00805F9B34FB";
@@ -216,6 +218,11 @@ class CodyServerCallbacks final : public NimBLEServerCallbacks {
     g_pairClientName = "";
     g_pairClientId = "";
     g_rxBuf.clear();
+    // 小程序退出/杀进程时可能收不到 guess_game_end；断连后收起倒计时与答案
+    if (displayMode == 4 && (guess_game_is_playing() || guess_game_is_showing_answer())) {
+      guess_game_reset();
+      handdraw_redraw_only();
+    }
     NimBLEDevice::startAdvertising();
   }
 };

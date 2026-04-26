@@ -353,7 +353,15 @@ void processSerialCommand(const String& payload) {
       resDoc["status"] = "error";
       resDoc["msg"] = "need_mode_4";
     } else {
-      guess_game_end_round();
+      // reveal 缺省 true：结束本局并揭晓（与旧版小程序一致）
+      // reveal false：仅收起倒计时与答案条（退出页面/切后台/跳过换词），不揭晓
+      const bool reveal = doc["reveal"] | true;
+      if (reveal) {
+        guess_game_end_round();
+      } else {
+        guess_game_reset();
+        handdraw_redraw_only();
+      }
     }
   } else if (cmd == "handdraw_save") {
     if (displayMode != 4) {
