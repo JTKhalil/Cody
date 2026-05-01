@@ -53,8 +53,9 @@ class ExpressionRenderer {
   // Differential update for eye white: update only changed edge segments between oldRy and newRy.
   void diffEyeWhite(const EyeGeom& eye, int16_t oldRy, int16_t newRy);
 
-  // Mouth / brows（需盖住 SLEEP_O 最大椭圆 + 线宽；原先 h=45 底边 < 大 O 下缘导致残影）
-  BBox mouthBox_ {52, 140, 136, 62};
+  // Mouth / brows：下缘盖住最大 O 嘴；上缘须在眼下缘之下 (kEyeCy+kBaseRy)，避免清屏擦掉眼白
+  // 下缘不超过 kExprLyricBandTopY-1，与歌词带留 1px 间隙
+  BBox mouthBox_ {52, 178, 136, 21};
   bool hasFacePrev_ = false;
   MouthId prevMouth_ = MouthId::NEUTRAL;
   int16_t prevMouthCxOfs_ = -32768;

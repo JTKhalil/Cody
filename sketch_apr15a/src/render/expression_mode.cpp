@@ -48,18 +48,22 @@ static ExprGroupId g_exprGroup = EXPR_GROUP_BUBU;
 // --- Expressions ---
 // Expression #1: blink both eyes (base -> blink -> base)
 // Expression #2: pupils look right -> left -> center (base open, only gazeX changes)
-// Expression #3: pupils move clockwise in a circle (base open, gazeX+gazeY change)
+// Expression #3: pupils circle in one direction (base open, gazeX+gazeY change)
 // Expression #4: half-close both eyes, hold 3s, then open
 // Expression #5: cry — 双眼紧闭开合 + 眼下蓝色竖条泪 + 伤心嘴
-// Expression #6: pupils look down -> up -> center（时间轴同 #2，gazeY 替代 gazeX）
+// Expression #6: pupils look down -> up -> center（时间轴同左右看，gazeY）
 // Expression #7: sing — 全睁、O 嘴、斜向话筒 + 底部歌词
 // Expression #8: sleep — 闭眼白线 + animated ZZZ（循环最后一项）
-static int g_exprIdx = 0;                 // 0..7
+// Expression #9: pupils circle，与 #3 同轨迹仅旋转方向相反
+// Expression #10: pupils look up -> down -> center（与 #6 同节奏，gazeY 取反）
+static int g_exprIdx = 0;                 // 0..9
 static bool g_exprPlaying = false;
 static unsigned long g_exprStartAt = 0;
 static unsigned long g_nextExprAt = 0;
 // 卜卜睡觉（g_exprIdx==7）播完后记录，10 分钟内不再随机到睡觉
 static unsigned long g_bubuLastSleepEndedAt = 0;
+// 卜卜唱歌 UI（话筒+歌词）是否处于显示中；离开唱歌段时兜底清屏，避免切换表情后残字
+static bool g_bubuSingLyricLatch = false;
 
 static constexpr unsigned long kExprGapMs = 3000;   // after returning to base
 static constexpr unsigned long kBubuSleepCooldownMs = 600000UL; // 10 分钟
@@ -70,7 +74,7 @@ static constexpr unsigned long kSingDurMs = 8000; // 唱歌时长 8s
 static constexpr float kSingMouthOMin = 0.38f;
 static constexpr float kSingMouthOMax = 0.64f;
 static constexpr float kSingMouthOCycleMs = 980.f; // O 型嘴大小起伏周期
-static constexpr unsigned long kCircleDurMs = 1600; // clockwise pupil circle (faster)
+static constexpr unsigned long kCircleDurMs = 1600; // pupil circle (idx 2 / 8, same duration)
 static constexpr unsigned long kHalfCloseInMs = 220;
 static constexpr unsigned long kHalfCloseHoldMs = 3000;
 static constexpr unsigned long kHalfCloseOutMs = 260;
@@ -86,17 +90,17 @@ static int pickNextBubuExprIdx(int prevIdx, unsigned long now) {
   const bool sleepAllowed =
       (g_bubuLastSleepEndedAt == 0 || (now - g_bubuLastSleepEndedAt) >= kBubuSleepCooldownMs);
   for (int attempt = 0; attempt < 48; attempt++) {
-    const int n = (int)random(0, 8);
+    const int n = (int)random(0, 10);
     if (prevIdx >= 0 && n == prevIdx) continue;
     if (n == 7 && !sleepAllowed) continue;
     return n;
   }
-  for (int n = 0; n < 8; n++) {
+  for (int n = 0; n < 10; n++) {
     if (prevIdx >= 0 && n == prevIdx) continue;
     if (n == 7 && !sleepAllowed) continue;
     return n;
   }
-  if (prevIdx >= 0) return (prevIdx + 1) % 8;
+  if (prevIdx >= 0) return (prevIdx + 1) % 10;
   return 0;
 }
 // eyeRy must stay > ~1 so renderer stays in “slit” mode, not full closed line
@@ -111,12 +115,12 @@ static constexpr unsigned long kCryInMs = 220;
 static constexpr unsigned long kCryTearFlowMs = 750;
 static constexpr unsigned long kCryTearHoldMs = 5000;
 static constexpr unsigned long kCryHoldMs = kCryTearFlowMs + kCryTearHoldMs;
-static constexpr unsigned long kCryOutMs = 260;
-static constexpr int16_t kCryPillarW = 9;
+static constexpr unsigned long kCryOutMs = 380; // 略长 + 渲染端补缝，减轻睁眼过程橙底闪动
+static constexpr int16_t kCryPillarW = 12;
 // 擦除条略宽于泪柱，避免蓝边残留；仅擦两眼下方竖带，不扫过嘴区（避免嘴闪、泪迹被嘴盖住）
-static constexpr int16_t kCryClearW = 13;
+static constexpr int16_t kCryClearW = 17;
 
-// 卜卜唱歌（g_exprIdx==6）：底部随机一句，双行换行，歌词带在屏底 y≥210，不压嘴
+// 卜卜唱歌（g_exprIdx==6）：底部随机一句，单行截断；嘴整体上移，歌词带自 kExprLyricBandTopY 起与嘴清屏不重叠
 static const char* const kBubuSingLyrics[] = {
     "逆风的方向，更适合飞翔",
     "笑着哭，最痛",
@@ -355,73 +359,57 @@ static void utf8PopLastChar(String& s) {
   s = s.substring(0, (unsigned)i);
 }
 
-// 歌词带在 y≥210：嘴部 SLEEP_O 差分清屏下缘约 209，避免嘴动画每帧擦掉歌词；高度内用 wqy12 排双行
-static constexpr int16_t kSingLyricBandY = 210;
-static constexpr int16_t kSingLyricBandH = 30;
+// 歌词带：wqy16 单行显示；上扩 3px 清抗锯齿残影；基线距屏底留白，避免贴边
+static constexpr int16_t kSingLyricBandY = kExprLyricBandTopY;
+static constexpr int16_t kSingLyricBottomTextPad = 10;
+static constexpr int16_t kSingLyricBandH = (int16_t)(DISP_H - kSingLyricBandY);
+static constexpr int16_t kSingLyricClearPadTop = 3;
+
+static inline void fillSingLyricBandBg() {
+  initColoursOnce();
+  const int16_t y = (int16_t)(kSingLyricBandY - kSingLyricClearPadTop);
+  const int16_t h = (int16_t)(kSingLyricBandH + kSingLyricClearPadTop);
+  tft.fillRect(0, y, DISP_W, h, C_ORANGE);
+}
 
 /** 唱歌专用：进入本段唱歌时调用一次即可（嘴与话筒不再写入该带，无需每帧重绘，避免闪屏） */
 static void showSingLyricsWrapped(const char* utf8) {
-  initColoursOnce();
-  tft.fillRect(0, kSingLyricBandY, DISP_W, kSingLyricBandH, C_ORANGE);
+  fillSingLyricBandBg();
   if (!utf8 || !utf8[0]) return;
 
-  u8g2.setFont(u8g2_font_wqy12_t_chinese3);
+  u8g2.setFont(u8g2_font_wqy16_t_gb2312);
   u8g2.setForegroundColor(C_WHITE);
   u8g2.setBackgroundColor(C_ORANGE);
   u8g2.setFontMode(0);
 
+  const int fa = u8g2.getFontAscent();
+  const int fd = u8g2.getFontDescent();
+  // 基线在带内上移，与屏底留 kSingLyricBottomTextPad（另 2px 防裁切）
+  const int baseline =
+      (int)(kSingLyricBandY + kSingLyricBandH - kSingLyricBottomTextPad - 2);
+
   const int maxW = 220;
   const int x0 = 10;
-  const int baselines[2] = {222, 235};
-  constexpr int kMaxLines = 2;
   constexpr const char* kEll = "…";
 
-  String rest(utf8);
-  rest.trim();
-  if (rest.length() == 0) {
+  String line(utf8);
+  line.trim();
+  if (line.length() == 0) {
     u8g2.setFontMode(1);
     return;
   }
 
-  for (int lineIdx = 0; lineIdx < kMaxLines && rest.length() > 0; lineIdx++) {
-    const bool isLastLine = (lineIdx == kMaxLines - 1);
-    int n = rest.length();
-    int bi = 0;
-    int lastFit = 0;
-    while (bi < n) {
-      int adv = utf8FirstCharLen((uint8_t)rest.charAt(bi));
-      if (bi + adv > n) adv = n - bi;
-      String trial = rest.substring(0, bi + adv);
-      if (u8g2.getUTF8Width(trial.c_str()) <= maxW) {
-        lastFit = bi + adv;
-        bi += adv;
-      } else {
-        break;
-      }
-    }
-    if (lastFit == 0) {
-      int adv = utf8FirstCharLen((uint8_t)rest.charAt(0));
-      if (adv > n) adv = n;
-      lastFit = adv;
-    }
-
-    String line = rest.substring(0, lastFit);
-    rest = rest.substring(lastFit);
-    rest.trim();
-
-    if (isLastLine && rest.length() > 0) {
-      String core = line;
+  if (u8g2.getUTF8Width(line.c_str()) > maxW) {
+    String core = line;
+    line = core + kEll;
+    while (core.length() > 0 && u8g2.getUTF8Width(line.c_str()) > maxW) {
+      utf8PopLastChar(core);
       line = core + kEll;
-      while (core.length() > 0 && u8g2.getUTF8Width(line.c_str()) > maxW) {
-        utf8PopLastChar(core);
-        line = core + kEll;
-      }
-      rest = "";
     }
-
-    u8g2.setCursor(x0, baselines[lineIdx]);
-    u8g2.print(line);
   }
+
+  u8g2.setCursor(x0, baseline);
+  u8g2.print(line);
 
   u8g2.setFontMode(1);
 }
@@ -441,7 +429,7 @@ static void showBottomText(const char* msg) {
 
 // 与 expression_renderer.cpp drawMouth 一致（嘴仍用此常量）
 static constexpr int16_t kExprMouthCx = 120;
-static constexpr int16_t kExprMouthY = 172;
+static constexpr int16_t kExprMouthY = 166;
 
 // ZZZ 锚在嘴的右上角外（再上、再右，避开 O 嘴动画）
 static void sleepZzzGlyphPositions(int16_t bx[3], int16_t by[3]) {
@@ -639,10 +627,10 @@ static void drawSingMicOnce() {
   const uint16_t colGrip = tft.color565(48, 46, 54);
 
   const int16_t hx = 172;
-  const int16_t hy = 182;
+  const int16_t hy = 176;
   const int16_t gx = 228;
-  // 握把末端低于歌词带 kSingLyricBandY(210)，避免每帧话筒画进歌词区后又被橙带盖住造成闪烁
-  const int16_t gy = 198;
+  // 握把末端低于歌词带 kSingLyricBandY，避免每帧话筒画进歌词区后又被橙带盖住造成闪烁
+  const int16_t gy = 192;
 
   float fx = (float)(gx - hx);
   float fy = (float)(gy - hy);
@@ -722,8 +710,8 @@ static void drawSingMicOnce() {
 
 static void clearSingOverlay() {
   initColoursOnce();
-  tft.fillRect(124, 152, 126, 98, C_ORANGE);
-  tft.fillRect(0, kSingLyricBandY, DISP_W, kSingLyricBandH, C_ORANGE);
+  tft.fillRect(124, 140, 126, 98, C_ORANGE);
+  fillSingLyricBandBg();
 }
 
 static void drawFlowerOnce() {
@@ -1578,6 +1566,7 @@ void expressionModeEnter() {
   if (g_exprGroup == EXPR_GROUP_BUBU) {
     // bubu：基准表情作为起点；眨眼后回到基准表情
     if (!g_exprInited) g_exprInited = true;
+    g_bubuSingLyricLatch = false;
     g_exprRenderer.enter();
     g_exprRenderer.tick(expr_base_frame_static());
     g_exprIdx = pickNextBubuExprIdx(-1, now);
@@ -1619,9 +1608,16 @@ void expressionModeTick() {
   static unsigned long lastFrameAt = 0;
   // 分支帧率：眨眼/转圈/哭/睡略快(80ms)；左右看/上下看/唱歌较慢(100ms)
   const unsigned long frameIntervalMs =
-      (g_exprIdx == 0 || g_exprIdx == 2 || g_exprIdx == 4 || g_exprIdx == 7) ? 80UL : 100UL;
+      (g_exprIdx == 0 || g_exprIdx == 2 || g_exprIdx == 4 || g_exprIdx == 7 || g_exprIdx == 8) ? 80UL
+                                                                                                  : 100UL;
   if (lastFrameAt && (now - lastFrameAt) < frameIntervalMs) return;
   lastFrameAt = now;
+
+  const bool bubuInSing = (g_exprIdx == 6 && g_exprPlaying);
+  if (g_bubuSingLyricLatch && !bubuInSing) {
+    clearSingOverlay();
+    g_bubuSingLyricLatch = false;
+  }
 
   if (!g_exprPlaying) {
     if (now < g_nextExprAt) return;
@@ -1655,16 +1651,16 @@ void expressionModeTick() {
       gx = quant_local(gx, 0.12f);
       f.gazeX = clamp_local(gx, -1.0f, 1.0f);
     }
-  } else if (g_exprIdx == 2) {
-    // Expression #3: pupil circle clockwise
+  } else if (g_exprIdx == 2 || g_exprIdx == 8) {
+    // Expression #3 / #9：瞳孔沿眼白内椭圆转一圈；#9 与 #3 仅 sin 符号相反（旋转方向相反）
     const unsigned long el = now - g_exprStartAt;
     const float t01 = (kCircleDurMs > 0) ? (el / (float)kCircleDurMs) : 1.0f;
     if (t01 >= 1.0f) {
       done = true;
     } else {
-      // y axis points down on screen; use -sin to get clockwise.
       const float t = clamp01_local(t01);
       const float ang = 6.2831853f * t;
+      const float sinSign = (g_exprIdx == 8) ? 1.0f : -1.0f;
 
       // 轨迹：与眼白外轮廓同形（在屏幕位移空间里保持“同一椭圆比”）。
       // 目标：瞳孔外轮廓离眼白边缘最近处始终留 4px，看起来像在眼白内沿转动。
@@ -1692,7 +1688,7 @@ void expressionModeTick() {
       const float w = wIn * wOut; // 0 -> 1 -> 0
 
       float gx = cosf(ang) * ax * w;
-      float gy = -sinf(ang) * ay * w;
+      float gy = sinSign * sinf(ang) * ay * w;
 
       // Same anti-flicker strategy as #2, but finer steps for smoother ellipse.
       gx = quant_local(gx, 0.08f);
@@ -1758,14 +1754,15 @@ void expressionModeTick() {
       f.gazeX = 0.0f;
       f.gazeY = 0.16f;
     }
-  } else if (g_exprIdx == 5) {
-    // Expression #6: look down -> up -> center（复用 look_lr 相位，映射到 gazeY；屏幕 y 向下为正）
+  } else if (g_exprIdx == 5 || g_exprIdx == 9) {
+    // Expression #6 / #10：#6 为看下→上→中；#10 为看上→下→中（gazeY 取反）
     const unsigned long el = now - g_exprStartAt;
     const float t01 = (kLookUDDurMs > 0) ? (el / (float)kLookUDDurMs) : 1.0f;
     if (t01 >= 1.0f) {
       done = true;
     } else {
       float gy = look_lr_profile_local(t01, 0.85f);
+      if (g_exprIdx == 9) gy = -gy;
       gy = quant_local(gy, 0.12f);
       f.gazeX = 0.0f;
       f.gazeY = clamp_local(gy, -1.0f, 1.0f);
@@ -1840,6 +1837,7 @@ void expressionModeTick() {
     const bool endingSing = (g_exprIdx == 6);
     if (endingSing) {
       clearSingOverlay();
+      g_bubuSingLyricLatch = false;
       g_exprRenderer.invalidateEyesAfterExternalClear();
       g_exprRenderer.clearMouthBoxToBg();
     }
@@ -1875,23 +1873,6 @@ void expressionModeTick() {
 
   g_exprRenderer.tick(f);
 
-  if (g_exprIdx == 6 && g_exprPlaying) {
-    initColoursOnce();
-    static unsigned long s_singLyricsForStart = 0xffffffffUL;
-    static const char* s_singLyricChosen = nullptr;
-    const bool singJustStarted = (s_singLyricsForStart != g_exprStartAt);
-    if (singJustStarted) {
-      s_singLyricsForStart = g_exprStartAt;
-      const int pick = (int)random(0, kBubuSingLyricsCount);
-      s_singLyricChosen = kBubuSingLyrics[pick];
-    }
-    // 话筒每帧重画；歌词仅在进入本段时画一次（带在 y≥210 且话筒不侵入，嘴清屏不触及，避免每帧刷字闪屏）
-    drawSingMicOnce();
-    if (singJustStarted && s_singLyricChosen) {
-      showSingLyricsWrapped(s_singLyricChosen);
-    }
-  }
-
   if (g_exprIdx == 4 && g_exprPlaying) {
     const unsigned long el = now - g_exprStartAt;
     drawBubuCryTears(f, el);
@@ -1902,6 +1883,24 @@ void expressionModeTick() {
     initColoursOnce();
     if (el >= kSleepCloseMs && el < kSleepCloseMs + kSleepHoldMs) {
       drawBubuSleepZzz(el - kSleepCloseMs);
+    }
+  }
+
+  // 唱歌：话筒每帧；歌词仅在进入本段画一次（嘴部已限制在 kExprLyricBandTopY 之上，见 expression_renderer）
+  if (g_exprIdx == 6 && g_exprPlaying) {
+    g_bubuSingLyricLatch = true;
+    initColoursOnce();
+    static unsigned long s_singLyricsForStart = 0xffffffffUL;
+    static const char* s_singLyricChosen = nullptr;
+    const bool singJustStarted = (s_singLyricsForStart != g_exprStartAt);
+    if (singJustStarted) {
+      s_singLyricsForStart = g_exprStartAt;
+      const int pick = (int)random(0, kBubuSingLyricsCount);
+      s_singLyricChosen = kBubuSingLyrics[pick];
+    }
+    drawSingMicOnce();
+    if (singJustStarted && s_singLyricChosen) {
+      showSingLyricsWrapped(s_singLyricChosen);
     }
   }
 }

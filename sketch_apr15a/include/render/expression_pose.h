@@ -30,6 +30,9 @@ struct BBox {
 // --- Visual constants (LOCKED to preview) ---
 static constexpr int16_t kDispW = 240;
 static constexpr int16_t kDispH = 240;
+/** 卜卜歌词带上沿 (y≥此值)；嘴部绘制/擦除须保持在其上方，歌词才可只画一次、避免整带每帧刷新闪屏 */
+// 单行歌词：带上沿略上移，基线另留 kSingLyricBottomTextPad（expression_mode）与屏底间隔
+static constexpr int16_t kExprLyricBandTopY = 204;
 static constexpr int16_t kEyeGap = 106;
 static constexpr int16_t kEyeCy = 85;
 // Eye size scaled +30%

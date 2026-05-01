@@ -4,6 +4,67 @@
 
 #include <math.h>
 
+namespace {
+// 嘴线基线（较原先 160 略下移，减轻挡眼）；半宽与 NEUTRAL(cx±28) 一致，其它弧形嘴同尺度避免换型残黑
+constexpr int16_t kMouthLineY = 166;
+constexpr int16_t kMouthHalfW = 28;
+
+// 嘴部擦除允许的行范围：完全在眼椭圆之下，且低于歌词带
+constexpr int16_t kMouthEraseMinY = (int16_t)(kEyeCy + kBaseRy + 2);
+constexpr int16_t kMouthEraseMaxY = (int16_t)(kExprLyricBandTopY - 1);
+
+static void fillEllipseRowsBelowY(Adafruit_ST7789& tft, int16_t cx, int16_t cy, int16_t rx, int16_t ry,
+                                  uint16_t col, int16_t yMaxExclusive) {
+  if (rx <= 0 || ry <= 0) return;
+  const float frx = (float)rx;
+  const float fry = (float)ry;
+  for (int16_t dy = -ry; dy <= ry; dy++) {
+    const int16_t py = (int16_t)(cy + dy);
+    if (py >= yMaxExclusive) continue;
+    const float fy = (float)dy;
+    const float term = 1.0f - (fy * fy) / (fry * fry);
+    if (term <= 0.0f) continue;
+    const int16_t xw = (int16_t)lroundf(frx * sqrtf(term));
+    tft.drawFastHLine((int16_t)(cx - xw), py, (int16_t)(2 * xw + 1), col);
+  }
+}
+
+static void clipMouthClearRect(int16_t& x0, int16_t& y0, int16_t& rw, int16_t& rh) {
+  if (y0 < kMouthEraseMinY) {
+    const int16_t cut = (int16_t)(kMouthEraseMinY - y0);
+    y0 = kMouthEraseMinY;
+    rh = (int16_t)(rh - cut);
+  }
+  if (rh > 0 && y0 + rh - 1 > kMouthEraseMaxY) {
+    rh = (int16_t)(kMouthEraseMaxY - y0 + 1);
+  }
+  if (rh < 0) rh = 0;
+}
+
+// 上擦除带与嘴线下移、半宽 kMouthHalfW+r 对齐。唱歌时 mouthCx=134，上一段多为 cx=120 的嘴线（左端 ~85），须向左扩到「基准嘴中心」再减半宽，否则会留左侧黑边
+static void fillMouthUpperEraseBand(Adafruit_ST7789& tft, uint16_t bg, int16_t mouthCx) {
+  constexpr int16_t kHalfSpan = (int16_t)(kMouthHalfW + 10);
+  constexpr int16_t kRefCx = 120;
+  constexpr int16_t kBandY = 150;
+  constexpr int16_t kBandH = 38;  // 约 150–187
+  int16_t ux = (int16_t)(mouthCx - kHalfSpan);
+  int16_t xr = (int16_t)(mouthCx + kHalfSpan);
+  const int16_t uxFromRef = (int16_t)(kRefCx - kHalfSpan);
+  if (ux > uxFromRef) ux = uxFromRef;
+  if (xr > 172) xr = 172;
+  if (xr > ux) tft.fillRect(ux, kBandY, (int16_t)(xr - ux + 1), kBandH, bg);
+}
+
+static void fillMouthLowerEraseBox(Adafruit_ST7789& tft, uint16_t bg, const BBox& mouthBox) {
+  tft.fillRect(mouthBox.x, mouthBox.y, mouthBox.w, mouthBox.h, bg);
+}
+
+static void fillFullMouthErase(Adafruit_ST7789& tft, uint16_t bg, const BBox& mouthBox, int16_t mouthCx) {
+  fillMouthUpperEraseBand(tft, bg, mouthCx);
+  fillMouthLowerEraseBox(tft, bg, mouthBox);
+}
+}  // namespace
+
 void ExpressionRenderer::initColoursOnce() {
   if (inited_) return;
   // 使用原表情模式背景橙（与旧 expression_mode.cpp 一致）
@@ -178,6 +239,22 @@ static inline int16_t ellipseXExtent(int16_t rx, int16_t ry, int16_t yAbs) {
   return (int16_t)lroundf(frx * sqrtf(term));
 }
 
+// 闭眼横线在 cy、cy+1 为整宽；小 eyeRy 时椭圆在 cy+1 行较窄，左右会露橙底并在睁眼过程中闪动 —— 用白补齐到整宽（与闭合线视觉衔接）
+static void healClosedLineOverhang(Adafruit_ST7789& tft, uint16_t white, const EyeGeom& eye, int16_t eyeRyOpen) {
+  if (eyeRyOpen <= 0) return;
+  for (int16_t row = 0; row <= 1; row++) {
+    const int16_t y = (int16_t)(eye.cy + row);
+    const int16_t xE = ellipseXExtent(eye.rx, eyeRyOpen, row);
+    if (xE <= 0 || xE >= eye.rx) continue;
+    const int16_t xl = (int16_t)(eye.cx - eye.rx);
+    const int16_t xr = (int16_t)(eye.cx + eye.rx);
+    const int16_t xlE = (int16_t)(eye.cx - xE);
+    const int16_t xrE = (int16_t)(eye.cx + xE);
+    if (xlE > xl) tft.drawFastHLine(xl, y, (int16_t)(xlE - xl), white);
+    if (xr > xrE) tft.drawFastHLine((int16_t)(xrE + 1), y, (int16_t)(xr - xrE), white);
+  }
+}
+
 // hidePupil 眯眼缝：上下「帽区」仍在全眼椭圆内，差分容易留白点 —— 按外轮廓刷回脸皮色
 static void paintSlitCapsBg(Adafruit_ST7789& tft, uint16_t bg, const EyeGeom& eye, int16_t slitRy) {
   if (slitRy <= 0 || slitRy > 12) return;
@@ -249,7 +326,7 @@ void ExpressionRenderer::diffEyeWhite(const EyeGeom& eye, int16_t oldRy, int16_t
 
 void ExpressionRenderer::clearMouthBoxToBg() {
   initColoursOnce();
-  tft.fillRect(mouthBox_.x, mouthBox_.y, mouthBox_.w, mouthBox_.h, bg_);
+  fillFullMouthErase(tft, bg_, mouthBox_, 120);
   prevMouthCxOfs_ = -32768;
   prevSleepOrxDraw_ = -32768;
   prevSleepOryDraw_ = -32768;
@@ -267,15 +344,16 @@ void ExpressionRenderer::drawMouth(const ExprFrame& frame, bool force) {
   // 睡觉 O 嘴：量化尺寸 + 仅在半径变化时清底重画，避免每帧整区橙闪；外实内空椭圆，环更厚
   if (id == MouthId::SLEEP_O) {
     const int16_t cx = (int16_t)(120 + frame.mouthCxOfs);
-    const int16_t y = 172;
+    const int16_t y = kMouthLineY;
     const uint16_t col = ST77XX_BLACK;
     const float ocx = (float)cx;
-    const float ocy = (float)(y + 6);
+    const float ocy = (float)(y + 5);
     float t01 = clampf(frame.sleepMouthO, 0.0f, 1.0f);
     constexpr int kSleepOQuantSteps = 14;
     t01 = floorf(t01 * (float)(kSleepOQuantSteps - 1) + 0.5f) / (float)(kSleepOQuantSteps - 1);
-    const float orx = lerpf(9.0f, 19.0f, t01);
-    const float ory = lerpf(7.0f, 15.0f, t01);
+    // 外径上限略收，与线型嘴视觉尺度接近，减少 O↔线 切换时擦区外残黑
+    const float orx = lerpf(8.0f, 17.0f, t01);
+    const float ory = lerpf(6.0f, 13.0f, t01);
     const int16_t icx = (int16_t)lroundf(ocx);
     const int16_t icy = (int16_t)lroundf(ocy);
     int16_t orxI = (int16_t)lroundf(orx);
@@ -304,6 +382,10 @@ void ExpressionRenderer::drawMouth(const ExprFrame& frame, bool force) {
       int16_t y0 = (int16_t)(icy - halfH);
       int16_t rw = (int16_t)(2 * halfW + 1);
       int16_t rh = (int16_t)(2 * halfH + 1);
+      // O 环左缘略超出 halfW 包络或量化缩圈时，向左多擦几列
+      constexpr int16_t kSleepClearPadL = 8;
+      x0 = (int16_t)(x0 - kSleepClearPadL);
+      rw = (int16_t)(rw + kSleepClearPadL);
       if (x0 < 0) {
         rw = (int16_t)(rw + x0);
         x0 = 0;
@@ -314,9 +396,12 @@ void ExpressionRenderer::drawMouth(const ExprFrame& frame, bool force) {
       }
       if ((int32_t)x0 + rw > kDispW) rw = (int16_t)(kDispW - x0);
       if ((int32_t)y0 + rh > kDispH) rh = (int16_t)(kDispH - y0);
+      clipMouthClearRect(x0, y0, rw, rh);
       if (rw > 0 && rh > 0) tft.fillRect(x0, y0, rw, rh, bg_);
+      // clip 后 y≥178，O 嘴上沿仍可能高于 mouthBox，需补上带擦除
+      fillMouthUpperEraseBand(tft, bg_, icx);
     } else {
-      tft.fillRect(mouthBox_.x, mouthBox_.y, mouthBox_.w, mouthBox_.h, bg_);
+      fillFullMouthErase(tft, bg_, mouthBox_, icx);
     }
 
     prevSleepOrxDraw_ = orxI;
@@ -325,10 +410,10 @@ void ExpressionRenderer::drawMouth(const ExprFrame& frame, bool force) {
     hasFacePrev_ = true;
     prevMouth_ = MouthId::SLEEP_O;
 
-    fillEllipse(icx, icy, orxI, oryI, col);
+    fillEllipseRowsBelowY(tft, icx, icy, orxI, oryI, col, kExprLyricBandTopY);
     const int16_t irx = (int16_t)(orxI - wall);
     const int16_t iry = (int16_t)(oryI - wall);
-    if (irx > 0 && iry > 0) fillEllipse(icx, icy, irx, iry, bg_);
+    if (irx > 0 && iry > 0) fillEllipseRowsBelowY(tft, icx, icy, irx, iry, bg_, kExprLyricBandTopY);
     return;
   }
 
@@ -336,16 +421,17 @@ void ExpressionRenderer::drawMouth(const ExprFrame& frame, bool force) {
   // 但当眼睛区域更新可能覆盖到嘴巴上方时，需要强制重画一次。
   if (!force && hasFacePrev_ && id == prevMouth_ && frame.mouthCxOfs == prevMouthCxOfs_) return;
   // 嘴型切换或嘴水平偏移变化时必须先铺回脸皮色，否则黑线叠黑线会缺笔画
+  const int16_t cx = (int16_t)(120 + frame.mouthCxOfs);
   if (hasFacePrev_ && (id != prevMouth_ || frame.mouthCxOfs != prevMouthCxOfs_)) {
-    tft.fillRect(mouthBox_.x, mouthBox_.y, mouthBox_.w, mouthBox_.h, bg_);
+    fillFullMouthErase(tft, bg_, mouthBox_, cx);
   }
   hasFacePrev_ = true;
   prevMouth_ = id;
   prevMouthCxOfs_ = frame.mouthCxOfs;
 
   // 方案 A：平时不重画；仅在切换时用 mouthBox_ 局部清底，再只用黑色笔画覆盖。
-  const int16_t cx = (int16_t)(120 + frame.mouthCxOfs);
-  const int16_t y = 172;
+  const int16_t y = kMouthLineY;
+  const int16_t w = kMouthHalfW;
   const uint16_t col = ST77XX_BLACK;
 
   // 厚线（10px）+ 圆角：沿线段/曲线采样画一串小圆点，天然圆头/圆角。
@@ -380,46 +466,51 @@ void ExpressionRenderer::drawMouth(const ExprFrame& frame, bool force) {
 
   switch (id) {
     case MouthId::NEUTRAL:
-      thickLine(cx - 28, y, cx + 28, y);
+      thickLine(cx - w, y, cx + w, y);
       break;
     case MouthId::SMILE:
-      // 5-seg arc up
-      thickLine(cx - 30, y + 6, cx - 15, y + 2);
-      thickLine(cx - 15, y + 2, cx, y);
-      thickLine(cx, y, cx + 15, y + 2);
-      thickLine(cx + 15, y + 2, cx + 30, y + 6);
+      // 与 NEUTRAL 同半宽；垂直幅度收小，弧顶略抬
+      {
+        const int16_t h2 = w / 2;
+        thickLine(cx - w, y + 4, cx - h2, y + 1);
+        thickLine(cx - h2, y + 1, cx, y);
+        thickLine(cx, y, cx + h2, y + 1);
+        thickLine(cx + h2, y + 1, cx + w, y + 4);
+      }
       break;
     case MouthId::SMILE_INVERTED: {
-      // 哭泣：向上凸弧（二次贝塞尔）。对称时 t=0.5 纵坐标为 (y角+y控)/2，控制点上移才明显上凸。
-      const float xL = (float)(cx - 30);
-      const float xR = (float)(cx + 30);
-      const float yCorner = (float)(y + 6);
-      const float yCtrl = (float)(y - 5); // 与 yCorner 中点约 y+0.5，弧顶靠近原 SMILE 中心
+      const float xL = (float)(cx - w);
+      const float xR = (float)(cx + w);
+      const float yCorner = (float)(y + 4);
+      const float yCtrl = (float)(y - 2);
       thickQuad(xL, yCorner, (float)cx, yCtrl, xR, yCorner);
       break;
     }
     case MouthId::FROWN:
-      // 5-seg arc down
-      thickLine(cx - 30, y, cx - 15, y + 4);
-      thickLine(cx - 15, y + 4, cx, y + 6);
-      thickLine(cx, y + 6, cx + 15, y + 4);
-      thickLine(cx + 15, y + 4, cx + 30, y);
+      {
+        const int16_t h2 = w / 2;
+        thickLine(cx - w, y, cx - h2, y + 3);
+        thickLine(cx - h2, y + 3, cx, y + 5);
+        thickLine(cx, y + 5, cx + h2, y + 3);
+        thickLine(cx + h2, y + 3, cx + w, y);
+      }
       break;
     case MouthId::ANGRY:
-      // zigzag
-      thickLine(cx - 28, y + 4, cx - 14, y);
-      thickLine(cx - 14, y, cx, y + 4);
-      thickLine(cx, y + 4, cx + 14, y);
-      thickLine(cx + 14, y, cx + 28, y + 4);
+      {
+        const int16_t h2 = w / 2;
+        thickLine(cx - w, y + 3, cx - h2, y);
+        thickLine(cx - h2, y, cx, y + 3);
+        thickLine(cx, y + 3, cx + h2, y);
+        thickLine(cx + h2, y, cx + w, y + 3);
+      }
       break;
     case MouthId::SMIRK:
-      // one-side up
-      thickLine(cx - 28, y + 4, cx - 10, y + 2);
-      thickLine(cx - 10, y + 2, cx + 12, y);
-      thickLine(cx + 12, y, cx + 28, y + 2);
+      thickLine(cx - w, y + 3, cx - 10, y + 1);
+      thickLine(cx - 10, y + 1, cx + 10, y);
+      thickLine(cx + 10, y, cx + w, y + 1);
       break;
     case MouthId::WAVY:
-      // “W”形：用 Catmull-Rom 样条穿过关键点，保证一条连续平滑曲线（无拐角感）
+      // “W”形：宽度与 NEUTRAL 一致，垂向压缩，避免超出上擦除带
       {
         auto catmull = [&](float p0, float p1, float p2, float p3, float t) -> float {
           const float t2 = t * t;
@@ -428,17 +519,16 @@ void ExpressionRenderer::drawMouth(const ExprFrame& frame, bool force) {
                          (-p0 + 3.0f * p1 - 3.0f * p2 + p3) * t3);
         };
 
-        // 宽度收窄（整体更像你截图的嘴）
-        const float xL = (float)(cx - 36);
-        const float xR = (float)(cx + 36);
+        const float xL = (float)(cx - w);
+        const float xR = (float)(cx + w);
 
         const float x1 = lerpf(xL, xR, 0.25f);
         const float x2 = lerpf(xL, xR, 0.50f);
         const float x3 = lerpf(xL, xR, 0.75f);
 
-        const float yTop = (float)(y + 3);
-        const float yPeak = (float)(y + 7);
-        const float yLow = (float)(y + 13);
+        const float yTop = (float)(y + 2);
+        const float yPeak = (float)(y + 4);
+        const float yLow = (float)(y + 7);
 
         // 5 个点：top -> low -> peak -> low -> top
         float px[5] = {xL, x1, x2, x3, xR};
@@ -471,7 +561,7 @@ void ExpressionRenderer::drawMouth(const ExprFrame& frame, bool force) {
       }
       break;
     default:
-      thickLine(cx - 28, y, cx + 28, y);
+      thickLine(cx - w, y, cx + w, y);
       break;
   }
 }
@@ -529,6 +619,7 @@ void ExpressionRenderer::tick(const ExprFrame& frame) {
         drawClosedEyeLine(eye);
       } else {
         fillEllipse(eye.cx, eye.cy, eye.rx, eyeRyNow, white_);
+        healClosedLineOverhang(tft, white_, eye, eyeRyNow);
         if (!hidePupil && eyeRyNow > 1) fillEllipseClippedToEye(pcx, pcy, prX, prY, eye, eyeRyNow, blue_);
         if (hidePupil) paintSlitCapsBg(tft, bg_, eye, eyeRyNow);
       }
@@ -551,6 +642,7 @@ void ExpressionRenderer::tick(const ExprFrame& frame) {
     // 改为直接按当前 eyeRy 画完整眼白 + 瞳孔，再走后续帧的 diffEyeWhite 增量。
     if (closedWas && !closedIs) {
       fillEllipse(eye.cx, eye.cy, eye.rx, eyeRyNow, white_);
+      healClosedLineOverhang(tft, white_, eye, eyeRyNow);
       if (!hidePupil && eyeRyNow > 1) fillEllipseClippedToEye(pcx, pcy, prX, prY, eye, eyeRyNow, blue_);
       if (hidePupil) paintSlitCapsBg(tft, bg_, eye, eyeRyNow);
       prevEyeRy = eyeRyNow;
@@ -597,6 +689,7 @@ void ExpressionRenderer::tick(const ExprFrame& frame) {
       } else if (!hidePupil && hidePupilChanged) {
         if (eyeRyNow > 1) fillEllipseClippedToEye(pcx, pcy, prX, prY, eye, eyeRyNow, blue_);
       }
+      if (eyeRyNow > 0) healClosedLineOverhang(tft, white_, eye, eyeRyNow);
     }
 
     prevEyeRy = eyeRyNow;
