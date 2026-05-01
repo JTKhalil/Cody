@@ -59,6 +59,8 @@ extern WebServer server;
 
 extern int lastMinute;
 extern int displayMode;
+/** 表情模式风格：0=Pupu（差分渲染 bubu），1=Coco（经典 actionStep） */
+extern int exprGroup;
 /** 设置页是否在前台；供 HTTP 等判断是否在设置内延迟刷新主界面 */
 extern bool settingsActive;
 

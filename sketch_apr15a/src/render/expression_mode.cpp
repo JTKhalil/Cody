@@ -1,5 +1,7 @@
 #include "include/globals.h"
 #include "include/render/expression_mode.h"
+#include "include/render/expression_pose.h"
+#include "include/render/expression_renderer.h"
 
 #include <math.h>
 
@@ -33,6 +35,145 @@ static unsigned long nextActionTime = 0;
 static unsigned long stepDueAt = 0;
 static int currentAction = -1;
 static int stepIdx = 0;
+
+static ExpressionRenderer g_exprRenderer;
+static bool g_exprInited = false;
+
+enum ExprGroupId : uint8_t {
+  EXPR_GROUP_BUBU = 0, // 新：渲染器差分表情（眨眼 + 左右看）
+  EXPR_GROUP_COCO = 1, // 旧：actionStep() 那套多动作表情
+};
+static ExprGroupId g_exprGroup = EXPR_GROUP_BUBU;
+
+// --- Expressions ---
+// Expression #1: blink both eyes (base -> blink -> base)
+// Expression #2: pupils look right -> left -> center (base open, only gazeX changes)
+// Expression #3: pupils move clockwise in a circle (base open, gazeX+gazeY change)
+// Expression #4: half-close both eyes, hold 3s, then open
+// Expression #5: cry — 双眼紧闭开合 + 眼下蓝色竖条泪 + 伤心嘴
+// Expression #6: pupils look down -> up -> center（时间轴同 #2，gazeY 替代 gazeX）
+// Expression #7: sing — 全睁、O 嘴、斜向话筒 + 底部歌词
+// Expression #8: sleep — 闭眼白线 + animated ZZZ（循环最后一项）
+static int g_exprIdx = 0;                 // 0..7
+static bool g_exprPlaying = false;
+static unsigned long g_exprStartAt = 0;
+static unsigned long g_nextExprAt = 0;
+// 卜卜睡觉（g_exprIdx==7）播完后记录，10 分钟内不再随机到睡觉
+static unsigned long g_bubuLastSleepEndedAt = 0;
+
+static constexpr unsigned long kExprGapMs = 3000;   // after returning to base
+static constexpr unsigned long kBubuSleepCooldownMs = 600000UL; // 10 分钟
+static constexpr unsigned long kBlinkDurMs = 220;   // fast + sample-friendly
+static constexpr unsigned long kLookLRDurMs = 2000; // right -> left -> center (longer holds)
+static constexpr unsigned long kLookUDDurMs = 2000; // down -> up -> center（与左右看同节奏）
+static constexpr unsigned long kSingDurMs = 8000; // 唱歌时长 8s
+static constexpr float kSingMouthOMin = 0.38f;
+static constexpr float kSingMouthOMax = 0.64f;
+static constexpr float kSingMouthOCycleMs = 980.f; // O 型嘴大小起伏周期
+static constexpr unsigned long kCircleDurMs = 1600; // clockwise pupil circle (faster)
+static constexpr unsigned long kHalfCloseInMs = 220;
+static constexpr unsigned long kHalfCloseHoldMs = 3000;
+static constexpr unsigned long kHalfCloseOutMs = 260;
+
+static constexpr unsigned long kSleepCloseMs = 320;
+static constexpr unsigned long kSleepHoldMs = 60000;
+// 睡醒时先清 ZZZ 再抬眼皮，避免擦除区盖住不完整眼白
+static constexpr unsigned long kSleepZzzPreOpenMs = 72;
+static constexpr unsigned long kSleepOpenMs = 340;
+
+// prevIdx < 0：进入表情模式时首抽，不检查“与上一段相同”
+static int pickNextBubuExprIdx(int prevIdx, unsigned long now) {
+  const bool sleepAllowed =
+      (g_bubuLastSleepEndedAt == 0 || (now - g_bubuLastSleepEndedAt) >= kBubuSleepCooldownMs);
+  for (int attempt = 0; attempt < 48; attempt++) {
+    const int n = (int)random(0, 8);
+    if (prevIdx >= 0 && n == prevIdx) continue;
+    if (n == 7 && !sleepAllowed) continue;
+    return n;
+  }
+  for (int n = 0; n < 8; n++) {
+    if (prevIdx >= 0 && n == prevIdx) continue;
+    if (n == 7 && !sleepAllowed) continue;
+    return n;
+  }
+  if (prevIdx >= 0) return (prevIdx + 1) % 8;
+  return 0;
+}
+// eyeRy must stay > ~1 so renderer stays in “slit” mode, not full closed line
+// 须使 eyeRy<=1 才会走 drawClosedEyeLine；0.019→ry=2 仍是细缝椭圆，左右会尖细。0 为等宽闭眼白线。
+static constexpr float kSleepSlitOpen = 0.0f;
+// 小于此开合度再隐藏瞳孔（接近缝眼时才消失，闭眼过程中仍可见眼珠）
+static constexpr float kSleepHidePupilOpenMax = 0.055f;
+static constexpr float kSleepMouthOCycleMs = 3800.f;
+
+// 哭泣：闭眼入 → 眼泪柱状流下 kCryTearFlowMs → 泪柱静止 kCryTearHoldMs（5s）→ 睁眼出
+static constexpr unsigned long kCryInMs = 220;
+static constexpr unsigned long kCryTearFlowMs = 750;
+static constexpr unsigned long kCryTearHoldMs = 5000;
+static constexpr unsigned long kCryHoldMs = kCryTearFlowMs + kCryTearHoldMs;
+static constexpr unsigned long kCryOutMs = 260;
+static constexpr int16_t kCryPillarW = 9;
+// 擦除条略宽于泪柱，避免蓝边残留；仅擦两眼下方竖带，不扫过嘴区（避免嘴闪、泪迹被嘴盖住）
+static constexpr int16_t kCryClearW = 13;
+
+// 卜卜唱歌（g_exprIdx==6）：底部随机一句，双行换行，歌词带在屏底 y≥200，不压嘴
+static const char* const kBubuSingLyrics[] = {
+    "逆风的方向，更适合飞翔",
+    "笑着哭，最痛",
+    "最怕突然听到你的消息",
+    "你不是真正的快乐 你的笑只是你穿的保护色",
+    "坚持对我来说，就是以刚克刚",
+    "咸鱼也要有梦",
+    "才想起那些是我最爱 最单纯的笑脸和最美那一年",
+    "生命有一种绝对",
+    "我们像一首最美丽的歌曲",
+};
+static constexpr int kBubuSingLyricsCount = (int)(sizeof(kBubuSingLyrics) / sizeof(kBubuSingLyrics[0]));
+
+static inline float clamp01_local(float x) { return x < 0.0f ? 0.0f : (x > 1.0f ? 1.0f : x); }
+static inline float smoothstep_local(float t) { t = clamp01_local(t); return t * t * (3.0f - 2.0f * t); }
+static inline float lerp_local(float a, float b, float t) { return a + (b - a) * t; }
+static inline float clamp_local(float x, float lo, float hi) { return x < lo ? lo : (x > hi ? hi : x); }
+static inline float quant_local(float x, float step) {
+  if (step <= 0.0f) return x;
+  return step * lroundf(x / step);
+}
+static float blink_profile_local(float t01) {
+  const float t = clamp01_local(t01);
+  if (t < 0.35f) return smoothstep_local(t / 0.35f);           // 0 -> 1
+  if (t < 0.55f) return 1.0f;                                  // hold
+  return 1.0f - smoothstep_local((t - 0.55f) / 0.45f);         // 1 -> 0
+}
+
+static float look_lr_profile_local(float t01, float amp) {
+  // Longer holds on right/left; quicker moves between (still smooth).
+  // 0..0.15 move to +amp, 0.15..0.42 hold right
+  // 0.42..0.57 move to -amp, 0.57..0.84 hold left
+  // 0.84..1.00 return to 0
+  const float t = clamp01_local(t01);
+  const float a = clamp_local(amp, 0.0f, 1.0f);
+  if (t < 0.15f) return lerp_local(0.0f, +a, smoothstep_local(t / 0.15f));
+  if (t < 0.42f) return +a;
+  if (t < 0.57f) return lerp_local(+a, -a, smoothstep_local((t - 0.42f) / 0.15f));
+  if (t < 0.84f) return -a;
+  return lerp_local(-a, 0.0f, smoothstep_local((t - 0.84f) / 0.16f));
+}
+
+static ExprFrame expr_base_frame_static() {
+  ExprFrame f{};
+  f.gazeX = 0.0f;
+  f.gazeY = 0.0f;
+  f.openL = 0.62f;
+  f.openR = 0.62f;
+  f.pupil = 0.55f;
+  f.crossEyeT = 1.0f;
+  f.hidePupil = false;
+  f.sleepMouthO = 0.0f;
+  f.mouthCxOfs = 0;
+  f.mouth = MouthId::WAVY;
+  f.brow = BrowId::NEUTRAL;
+  return f;
+}
 
 static void initColoursOnce() {
   if (inited) return;
@@ -121,7 +262,6 @@ static void drawEyesSmart(int16_t ox, int16_t h, bool showBlush) {
 }
 
 enum ActionId {
-  // 对齐你给的 case 0..30（基础表情 + 道具互动）
   ACT_BLINK = 0,
   ACT_HAPPY = 1,
   ACT_PLEADING = 2,
@@ -138,36 +278,26 @@ enum ActionId {
   ACT_SNOBBY = 13,
   ACT_SIDE_TILT = 14,
   ACT_SLEEPING = 15,
-
   ACT_SINGING = 16,
-  ACT_WINDMILL = 17,
-  ACT_FLOWER = 18,
-  ACT_BUBBLES = 19,
-  ACT_READING = 20,
-  ACT_EATING = 21,
-  ACT_GAMING = 22,
-  ACT_WORKOUT = 23,
-  ACT_CAMERA = 24,
-  ACT_MAGIC = 25,
-  ACT_COFFEE = 26,
-  ACT_PAINTING = 27,
-  ACT_FISHING = 28,
-  ACT_PARTY = 29,
-  ACT_MUSIC = 30,
-
-  // 额外经典可爱动作（31..40）
-  ACT_LOVE = 31,        // 爱心暴击
-  ACT_LAUGH = 32,       // 大笑
-  ACT_ANGRY = 33,       // 生气
-  ACT_CRY = 34,         // 呜呜哭
-  ACT_SPARKLE = 35,     // 眼里有光
-  ACT_WAVE = 36,        // 挥手打招呼
-  ACT_THUMBS_UP = 37,   // 点赞
-  ACT_SURPRISED = 38,   // 震惊（更夸张）
-  ACT_SLEEP_MASK = 39,  // 眼罩睡
-  ACT_HEART_RAIN = 40,  // 爱心雨
-
-  ACT_COUNT = 41
+  ACT_FLOWER = 17,
+  ACT_READING = 18,
+  ACT_EATING = 19,
+  ACT_GAMING = 20,
+  ACT_WORKOUT = 21,
+  ACT_CAMERA = 22,
+  ACT_MAGIC = 23,
+  ACT_COFFEE = 24,
+  ACT_PAINTING = 25,
+  ACT_PARTY = 26,
+  ACT_MUSIC = 27,
+  ACT_LAUGH = 28,
+  ACT_ANGRY = 29,
+  ACT_CRY = 30,
+  ACT_SPARKLE = 31,
+  ACT_WAVE = 32,
+  ACT_THUMBS_UP = 33,
+  ACT_SURPRISED = 34,
+  ACT_COUNT = 35
 };
 
 static void startAction(int a) {
@@ -209,6 +339,92 @@ static void clearTextLine() {
   tft.fillRect(0, 205, 240, 30, C_ORANGE);
 }
 
+static int utf8FirstCharLen(uint8_t c) {
+  if ((c & 0x80) == 0) return 1;
+  if ((c & 0xE0) == 0xC0) return 2;
+  if ((c & 0xF0) == 0xE0) return 3;
+  if ((c & 0xF8) == 0xF0) return 4;
+  return 1;
+}
+
+static void utf8PopLastChar(String& s) {
+  if (s.length() == 0) return;
+  int i = (int)s.length() - 1;
+  while (i > 0 && ((uint8_t)s.charAt(i) & 0xC0) == 0x80) i--;
+  s = s.substring(0, (unsigned)i);
+}
+
+// 歌词带在 y≥210：嘴部 SLEEP_O 差分清屏下缘约 209，避免嘴动画每帧擦掉歌词；高度内用 wqy12 排双行
+static constexpr int16_t kSingLyricBandY = 210;
+static constexpr int16_t kSingLyricBandH = 30;
+
+/** 唱歌专用：进入本段唱歌时调用一次即可（嘴与话筒不再写入该带，无需每帧重绘，避免闪屏） */
+static void showSingLyricsWrapped(const char* utf8) {
+  initColoursOnce();
+  tft.fillRect(0, kSingLyricBandY, DISP_W, kSingLyricBandH, C_ORANGE);
+  if (!utf8 || !utf8[0]) return;
+
+  u8g2.setFont(u8g2_font_wqy12_t_chinese3);
+  u8g2.setForegroundColor(C_WHITE);
+  u8g2.setBackgroundColor(C_ORANGE);
+  u8g2.setFontMode(0);
+
+  const int maxW = 220;
+  const int x0 = 10;
+  const int baselines[2] = {222, 235};
+  constexpr int kMaxLines = 2;
+  constexpr const char* kEll = "…";
+
+  String rest(utf8);
+  rest.trim();
+  if (rest.length() == 0) {
+    u8g2.setFontMode(1);
+    return;
+  }
+
+  for (int lineIdx = 0; lineIdx < kMaxLines && rest.length() > 0; lineIdx++) {
+    const bool isLastLine = (lineIdx == kMaxLines - 1);
+    int n = rest.length();
+    int bi = 0;
+    int lastFit = 0;
+    while (bi < n) {
+      int adv = utf8FirstCharLen((uint8_t)rest.charAt(bi));
+      if (bi + adv > n) adv = n - bi;
+      String trial = rest.substring(0, bi + adv);
+      if (u8g2.getUTF8Width(trial.c_str()) <= maxW) {
+        lastFit = bi + adv;
+        bi += adv;
+      } else {
+        break;
+      }
+    }
+    if (lastFit == 0) {
+      int adv = utf8FirstCharLen((uint8_t)rest.charAt(0));
+      if (adv > n) adv = n;
+      lastFit = adv;
+    }
+
+    String line = rest.substring(0, lastFit);
+    rest = rest.substring(lastFit);
+    rest.trim();
+
+    if (isLastLine && rest.length() > 0) {
+      String core = line;
+      line = core + kEll;
+      while (core.length() > 0 && u8g2.getUTF8Width(line.c_str()) > maxW) {
+        utf8PopLastChar(core);
+        line = core + kEll;
+      }
+      rest = "";
+    }
+
+    u8g2.setCursor(x0, baselines[lineIdx]);
+    u8g2.print(line);
+  }
+
+  u8g2.setFontMode(1);
+}
+
 static void showBottomText(const char* msg) {
   clearTextLine();
   // 使用项目内置的 U8g2 中文字体，避免乱码
@@ -222,16 +438,184 @@ static void showBottomText(const char* msg) {
   u8g2.setFontMode(1); // 还原透明模式，避免影响其它界面
 }
 
-static void showTopRightStageText(const char* msg) {
-  // 右上角阶段文字（避免遮挡主体）
-  tft.fillRect(146, 4, 92, 26, C_ORANGE);
-  u8g2.setFont(u8g2_font_wqy16_t_gb2312);
-  u8g2.setForegroundColor(C_WHITE);
-  u8g2.setBackgroundColor(C_ORANGE);
-  u8g2.setFontMode(0); // 实心背景，避免黑色残影
-  u8g2.setCursor(148, 22);
-  u8g2.print(msg);
-  u8g2.setFontMode(1);
+// 与 expression_renderer.cpp drawMouth 一致（嘴仍用此常量）
+static constexpr int16_t kExprMouthCx = 120;
+static constexpr int16_t kExprMouthY = 172;
+
+// ZZZ 锚在嘴的右上角外（再上、再右，避开 O 嘴动画）
+static void sleepZzzGlyphPositions(int16_t bx[3], int16_t by[3]) {
+  const int16_t ax = (int16_t)(kExprMouthCx + 38);
+  const int16_t ay = (int16_t)(kExprMouthY - 32);
+  bx[0] = (int16_t)(ax - 12);
+  bx[1] = (int16_t)(ax + 2);
+  bx[2] = (int16_t)(ax + 14);
+  by[0] = (int16_t)(ay + 4);
+  by[1] = (int16_t)(ay - 6);
+  by[2] = (int16_t)(ay - 16);
+}
+
+// 三个 Z（字号 1,1,2）完整占位的外包矩形；动画每帧用同一矩形清底，避免 union 上一帧导致区域忽大忽小闪屏
+static void sleepZzzFixedPaintBounds(int16_t& outX, int16_t& outY, int16_t& outW, int16_t& outH) {
+  static constexpr uint16_t kLayoutTag = 5u;
+  static uint16_t s_layoutTag = 0;
+  static int16_t s_x, s_y, s_w, s_h;
+  if (s_layoutTag == kLayoutTag) {
+    outX = s_x;
+    outY = s_y;
+    outW = s_w;
+    outH = s_h;
+    return;
+  }
+  initColoursOnce();
+  int16_t bx[3], by[3];
+  sleepZzzGlyphPositions(bx, by);
+  const uint8_t szs[3] = {1, 1, 2};
+  int32_t minX = 1000, minY = 1000, maxX = 0, maxY = 0;
+  for (int i = 0; i < 3; i++) {
+    tft.setTextSize(szs[i]);
+    int16_t gb, gby;
+    uint16_t gw, gh;
+    tft.getTextBounds("Z", bx[i], by[i], &gb, &gby, &gw, &gh);
+    minX = min(minX, (int32_t)gb);
+    minY = min(minY, (int32_t)gby);
+    maxX = max(maxX, (int32_t)gb + (int32_t)gw);
+    maxY = max(maxY, (int32_t)gby + (int32_t)gh);
+  }
+  tft.setTextSize(1);
+  constexpr int16_t kPad = 4;
+  s_x = (int16_t)(minX - kPad);
+  s_y = (int16_t)(minY - kPad);
+  s_w = (int16_t)(maxX - minX + 2 * kPad);
+  s_h = (int16_t)(maxY - minY + 2 * kPad);
+  s_layoutTag = kLayoutTag;
+  outX = s_x;
+  outY = s_y;
+  outW = s_w;
+  outH = s_h;
+}
+
+static void bubuSleepZzzForeheadClear() {
+  initColoursOnce();
+  int16_t x, y, w, h;
+  sleepZzzFixedPaintBounds(x, y, w, h);
+  tft.fillRect(x, y, w, h, C_ORANGE);
+}
+
+// bubu #5：ZZZ 在嘴右上角外，偏小，斜向；逐个出现再逐个消失
+static void drawBubuSleepZzz(unsigned long tLocalMs) {
+  initColoursOnce();
+  int16_t bx[3], by[3];
+  sleepZzzGlyphPositions(bx, by);
+  const uint8_t szs[3] = {1, 1, 2};
+  int16_t px, py, pw, ph;
+  sleepZzzFixedPaintBounds(px, py, pw, ph);
+
+  constexpr unsigned long kStep = 320;
+  constexpr unsigned long kCycle = kStep * 6;
+  const unsigned long c = tLocalMs % kCycle;
+  uint8_t vis = 0;
+  if (c < kStep)
+    vis = 1;
+  else if (c < 2 * kStep)
+    vis = 3;
+  else if (c < 3 * kStep)
+    vis = 7;
+  else if (c < 4 * kStep)
+    vis = 6;
+  else if (c < 5 * kStep)
+    vis = 4;
+  else
+    vis = 0;
+
+  tft.fillRect(px, py, pw, ph, C_ORANGE);
+
+  tft.setTextWrap(false);
+  tft.setTextColor(C_WHITE, C_ORANGE);
+  for (int i = 0; i < 3; i++) {
+    if (((vis >> i) & 1) == 0) continue;
+    tft.setTextSize(szs[i]);
+    tft.setCursor(bx[i], by[i]);
+    tft.print('Z');
+  }
+  tft.setTextSize(1);
+}
+
+// 哭泣：只擦两眼泪柱竖带（橙底），不铺整屏宽条，避免盖住嘴与切断泪迹
+static void bubuCryTearsClearPillarStrips(int16_t yTop, int16_t yBot, int16_t cxL, int16_t cxR, int16_t clearW) {
+  initColoursOnce();
+  if (yBot <= yTop || clearW < 2) return;
+  const int16_t h = (int16_t)(yBot - yTop);
+  auto strip = [&](int16_t cx) {
+    int16_t x = (int16_t)(cx - clearW / 2);
+    if (x < 0) x = 0;
+    if (x + clearW > DISP_W) x = (int16_t)(DISP_W - clearW);
+    tft.fillRect(x, yTop, clearW, h, C_ORANGE);
+  };
+  strip(cxL);
+  strip(cxR);
+}
+
+// 两眼下方柱状泪：仅在流下开始前清一次底；流下过程只向下加长竖条；静止 5s 不重绘以压闪
+static void drawBubuCryTears(const ExprFrame& f, unsigned long elLocal) {
+  initColoursOnce();
+  static unsigned long s_prevElCry = 0xffffffffUL;
+  static bool s_flowBandCleared = false;
+  static bool s_holdPainted = false;
+
+  const EyeGeom L = expression_eye_left();
+  const EyeGeom R = expression_eye_right();
+  const int16_t ryL = expression_eye_ry_from_open(f.openL);
+  const int16_t ryR = expression_eye_ry_from_open(f.openR);
+  const int16_t yBaseL = (int16_t)(L.cy + max((int16_t)3, ryL) + 2);
+  const int16_t yBaseR = (int16_t)(R.cy + max((int16_t)3, ryR) + 2);
+  const int16_t yTop = (int16_t)min((int)yBaseL, (int)yBaseR);
+  const int16_t yBot = DISP_H; // fillRect 高度用 yBot - yTop，泪柱画到屏底
+
+  if (elLocal < kCryInMs) {
+    s_flowBandCleared = false;
+    s_holdPainted = false;
+    s_prevElCry = elLocal;
+    return;
+  }
+
+  if (elLocal >= kCryInMs + kCryHoldMs) {
+    const bool enteredOut = (s_prevElCry < kCryInMs + kCryHoldMs);
+    s_prevElCry = elLocal;
+    if (enteredOut) bubuCryTearsClearPillarStrips((int16_t)(yTop - 2), yBot, L.cx, R.cx, kCryClearW);
+    return;
+  }
+
+  const unsigned long tRel = elLocal - kCryInMs;
+  const uint16_t tear = tft.color565(28, 105, 255);
+  const int16_t maxHL = (int16_t)(DISP_H - yBaseL);
+  const int16_t maxHR = (int16_t)(DISP_H - yBaseR);
+
+  auto drawOnePillar = [&](int16_t cx, int16_t yBase, int16_t maxH, int16_t pillarH) {
+    const int16_t h = (int16_t)min((int)maxH, (int)pillarH);
+    if (h <= 0) return;
+    const int16_t x = (int16_t)(cx - kCryPillarW / 2);
+    tft.fillRect(x, yBase, kCryPillarW, h, tear);
+  };
+
+  if (tRel < kCryTearFlowMs) {
+    if (!s_flowBandCleared) {
+      bubuCryTearsClearPillarStrips((int16_t)(yTop - 2), yBot, L.cx, R.cx, kCryClearW);
+      s_flowBandCleared = true;
+      s_holdPainted = false;
+    }
+    const float u = smoothstep_local((float)tRel / (float)max(1UL, kCryTearFlowMs));
+    const int16_t hL = (int16_t)min((int)maxHL, (int)lroundf(4.0f + u * (float)max(1, (int)maxHL - 4)));
+    const int16_t hR = (int16_t)min((int)maxHR, (int)lroundf(4.0f + u * (float)max(1, (int)maxHR - 4)));
+    drawOnePillar(L.cx, yBaseL, maxHL, hL);
+    drawOnePillar(R.cx, yBaseR, maxHR, hR);
+  } else {
+    if (!s_holdPainted) {
+      drawOnePillar(L.cx, yBaseL, maxHL, maxHL);
+      drawOnePillar(R.cx, yBaseR, maxHR, maxHR);
+      s_holdPainted = true;
+    }
+  }
+  s_prevElCry = elLocal;
 }
 
 static void drawMicOnce() {
@@ -240,18 +624,105 @@ static void drawMicOnce() {
   tft.fillCircle(168, 150, 15, C_BLACK);
 }
 
-static void drawWindmillFrame(bool cross) {
-  // 风车杆
-  tft.fillRect(60, 150, 4, 60, C_BROWN);
-  // 擦除叶片区域后重画（避免叠色）
-  tft.fillCircle(62, 150, 25, C_ORANGE);
-  if (cross) {
-    tft.drawLine(48, 136, 76, 164, C_YELLOW);
-    tft.drawLine(48, 164, 76, 136, C_RED);
-  } else {
-    tft.fillRect(42, 148, 40, 4, C_YELLOW);
-    tft.fillRect(60, 130, 4, 40, C_RED);
+// 唱歌：🎤 风格 — 大圆网罩 + 银环 + 粉红握身段 + 深色尾把（沿斜轴绘制）
+static void drawSingMicOnce() {
+  initColoursOnce();
+  const uint16_t meshCore = tft.color565(20, 20, 26);
+  const uint16_t meshShade = tft.color565(38, 38, 48);
+  const uint16_t meshHi = tft.color565(72, 72, 88);
+  const uint16_t colGrille = tft.color565(52, 52, 64);
+  const uint16_t colSilver = tft.color565(218, 218, 228);
+  const uint16_t colSilverDim = tft.color565(140, 138, 152);
+  const uint16_t colBody = tft.color565(238, 72, 108);
+  const uint16_t colBodyHi = tft.color565(255, 140, 165);
+  const uint16_t colGrip = tft.color565(48, 46, 54);
+
+  const int16_t hx = 172;
+  const int16_t hy = 182;
+  const int16_t gx = 228;
+  // 握把末端低于歌词带 kSingLyricBandY(210)，避免每帧话筒画进歌词区后又被橙带盖住造成闪烁
+  const int16_t gy = 198;
+
+  float fx = (float)(gx - hx);
+  float fy = (float)(gy - hy);
+  const float L = sqrtf(fx * fx + fy * fy);
+  if (L < 1.0f) return;
+  fx /= L;
+  fy /= L;
+  const float pxn = -fy;
+  const float pyn = fx;
+
+  const float headR = 14.5f;
+  const float dMin = headR - 0.5f;
+  const float dMax = L;
+  if (dMax <= dMin) return;
+
+  for (float d = dMax; d >= dMin; d -= 2.05f) {
+    const float u = (d - dMin) / (dMax - dMin);
+    int16_t cx = (int16_t)lroundf(hx + fx * d);
+    int16_t cy = (int16_t)lroundf(hy + fy * d);
+    uint16_t col;
+    int16_t rad;
+    if (u < 0.10f) {
+      col = colSilver;
+      rad = 5;
+    } else if (u < 0.14f) {
+      col = colSilverDim;
+      rad = 4;
+    } else if (u < 0.45f) {
+      col = (u < 0.28f) ? colBodyHi : colBody;
+      rad = (int16_t)lroundf(6.2f - 0.8f * (u - 0.14f));
+      if (u > 0.22f && u < 0.38f) {
+        int16_t hx2 = (int16_t)lroundf(cx + pxn * 2.2f);
+        int16_t hy2 = (int16_t)lroundf(cy + pyn * 2.2f);
+        tft.fillCircle(hx2, hy2, 2, colBodyHi);
+      }
+    } else {
+      col = colGrip;
+      rad = (int16_t)lroundf(3.8f + 1.2f * u);
+    }
+    tft.fillCircle(cx, cy, (int16_t)max((int16_t)2, rad), col);
   }
+
+  tft.fillCircle(hx, hy, 15, meshShade);
+  tft.fillCircle(hx, hy, 14, meshCore);
+  tft.drawCircle(hx, hy, 15, colSilverDim);
+  tft.drawCircle(hx, hy, 14, colGrille);
+
+  for (int dy = -13; dy <= 11; dy += 2) {
+    const float rr = headR * headR - (float)(dy * dy);
+    if (rr < 0.0f) continue;
+    const int aw = (int)lroundf(sqrtf(rr));
+    if (aw <= 0) continue;
+    const uint16_t gc = (dy < -5) ? colGrille : meshHi;
+    tft.drawFastHLine((int16_t)(hx - aw), (int16_t)(hy + dy), (int16_t)(2 * aw + 1), gc);
+  }
+  for (int dx = -12; dx <= 12; dx += 4) {
+    const float rr = headR * headR - (float)(dx * dx);
+    if (rr < 0.0f) continue;
+    const int ah = (int)lroundf(sqrtf(rr));
+    if (ah <= 0) continue;
+    tft.drawFastVLine((int16_t)(hx + dx), (int16_t)(hy - ah), (int16_t)(2 * ah + 1), colGrille);
+  }
+
+  tft.fillCircle((int16_t)lroundf(hx + pxn * 4.f - 2.f), (int16_t)lroundf(hy + pyn * 4.f - 3.f), 5, meshHi);
+  tft.drawCircle((int16_t)lroundf(hx + pxn * 4.f - 2.f), (int16_t)lroundf(hy + pyn * 4.f - 3.f), 5, colSilverDim);
+  tft.fillCircle((int16_t)lroundf(hx + pxn * 2.5f), (int16_t)lroundf(hy + pyn * 2.5f), 2, C_WHITE);
+
+  const int16_t bx = (int16_t)lroundf(hx + fx * (headR + 1.2f));
+  const int16_t by = (int16_t)lroundf(hy + fy * (headR + 1.2f));
+  for (int k = -3; k <= 3; k++) {
+    int16_t ox = (int16_t)lroundf(bx + pxn * (float)k * 1.8f);
+    int16_t oy = (int16_t)lroundf(by + pyn * (float)k * 1.8f);
+    tft.drawPixel(ox, oy, colSilver);
+    if (abs(k) <= 2) tft.drawPixel((int16_t)(ox + lroundf(fx)), (int16_t)(oy + lroundf(fy)), colSilverDim);
+  }
+}
+
+static void clearSingOverlay() {
+  initColoursOnce();
+  tft.fillRect(124, 152, 126, 98, C_ORANGE);
+  tft.fillRect(0, kSingLyricBandY, DISP_W, kSingLyricBandH, C_ORANGE);
 }
 
 static void drawFlowerOnce() {
@@ -320,13 +791,6 @@ static void drawHeadphonesFrame(bool on) {
   tft.drawCircle(120, EYE_CY + 10, 94, col);
 }
 
-static void drawHeart(int cx, int cy, int r, uint16_t col) {
-  // 简单爱心：两个圆 + 三角
-  tft.fillCircle(cx - r, cy, r, col);
-  tft.fillCircle(cx + r, cy, r, col);
-  tft.fillTriangle(cx - 2 * r, cy, cx + 2 * r, cy, cx, cy + 3 * r, col);
-}
-
 static void drawThumbOnce(int x, int y, uint16_t col) {
   // 简化点赞手（像素块风）
   tft.fillRoundRect(x, y, 34, 26, 6, col);      // 手掌
@@ -354,109 +818,6 @@ static void partyConfettiStep(int i) {
   int x = 20 + (int)random(0, 200);
   int y = 110 + (int)random(0, 80);
   tft.fillRect(x, y, 6, 6, c);
-}
-
-static void fishingDrawStatic() {
-  // 静态：只画水面（鱼竿/鱼线由动画阶段驱动）
-  tft.fillRect(0, 180, 240, 60, C_BLUE);
-}
-
-static int old_fx = 120;
-static int old_fy = 205;
-static float fish_fy = 205.0f;
-static int old_bobY = 180;
-static int old_bobX = 120;
-static int old_line_x1 = 120, old_line_y1 = 140, old_line_x2 = 120, old_line_y2 = 180;
-static bool fishingBite = false;
-static unsigned long fishingBiteUntil = 0;
-static unsigned long fishingNextBiteAt = 0;
-static bool fishingRodRaised = false;
-static bool old_fishVertical = false;
-static int old_rod_x1 = 40, old_rod_y1 = 175, old_rod_x2 = 120, old_rod_y2 = 140;
-static int old_fish_w = 56;
-static int old_fish_h = 32;
-
-static inline int fishingRodBaseY() { return fishingRodRaised ? 155 : 175; }
-static inline int fishingRodTipY() { return fishingRodRaised ? 118 : 140; }
-static inline int fishingRodBaseX() { return 40; }
-static inline int fishingRodTipX() { return 120; }
-
-static void fishingRestoreRect(int x, int y, int w, int h);
-
-static void fishingDrawRod(int x1, int y1, int x2, int y2) {
-  // 加粗鱼竿：叠画几条平行线（避免不清晰）
-  tft.drawLine(x1, y1, x2, y2, C_BROWN);
-  tft.drawLine(x1 + 1, y1, x2 + 1, y2, C_BROWN);
-  tft.drawLine(x1, y1 + 1, x2, y2 + 1, C_BROWN);
-}
-
-static void fishingRestoreRodBBox(int x1, int y1, int x2, int y2) {
-  int rx0 = min(x1, x2) - 2;
-  int ry0 = min(y1, y2) - 2;
-  int rx1 = max(x1, x2) + 2;
-  int ry1 = max(y1, y2) + 2;
-  fishingRestoreRect(rx0, ry0, rx1 - rx0, ry1 - ry0);
-}
-
-static void fishingRestoreRect(int x, int y, int w, int h) {
-  // 只恢复这块区域的背景（橙色天空 + 蓝色水面）
-  int x0 = max(0, x);
-  int y0 = max(0, y);
-  int x1 = min((int)DISP_W, x + w);
-  int y1 = min((int)DISP_H, y + h);
-  if (x1 <= x0 || y1 <= y0) return;
-
-  // 上半部：橙色
-  if (y0 < 180) {
-    int hy1 = min(y1, 180);
-    tft.fillRect(x0, y0, x1 - x0, hy1 - y0, C_ORANGE);
-  }
-  // 水面：蓝色
-  if (y1 > 180) {
-    int wy0 = max(y0, 180);
-    tft.fillRect(x0, wy0, x1 - x0, y1 - wy0, C_BLUE);
-  }
-}
-
-static void fishingDrawBobber(int bobY) {
-  // 浮漂（在水面附近上下轻微抖动）
-  tft.fillCircle(120, bobY, 6, C_RED);
-  // 小高光
-  tft.fillCircle(118, bobY - 2, 2, C_WHITE);
-}
-
-static void fishingDrawBobberXY(int bobX, int bobY) {
-  tft.fillCircle(bobX, bobY, 6, C_RED);
-  tft.fillCircle(bobX - 2, bobY - 2, 2, C_WHITE);
-}
-
-static void fishingDrawFishUnified(int x, int y, bool vertical, float phaseT) {
-  // 同一条鱼的两种方向（横/竖旋转），保持一致的“长相/比例”
-  const int bodyW = 24;
-  const int bodyH = 16;
-  const int w = vertical ? bodyH : bodyW;
-  const int h = vertical ? bodyW : bodyH;
-
-  tft.fillRoundRect(x - w / 2, y - h / 2, w, h, 5, C_CYAN);
-
-  if (!vertical) {
-    bool faceRight = cosf(phaseT) > 0;
-    if (faceRight) {
-      tft.fillTriangle(x - w / 2, y, x - w / 2 - 12, y - 10, x - w / 2 - 12, y + 10, C_CYAN);
-      tft.fillCircle(x + 6, y - 2, 3, C_BLACK);
-      tft.fillCircle(x + 7, y - 3, 1, C_WHITE);
-    } else {
-      tft.fillTriangle(x + w / 2, y, x + w / 2 + 12, y - 10, x + w / 2 + 12, y + 10, C_CYAN);
-      tft.fillCircle(x - 6, y - 2, 3, C_BLACK);
-      tft.fillCircle(x - 7, y - 3, 1, C_WHITE);
-    }
-  } else {
-    // 竖向：头朝上，尾在下（与横向同一条鱼）
-    tft.fillTriangle(x, y - h / 2 - 10, x - 10, y - h / 2 + 2, x + 10, y - h / 2 + 2, C_CYAN);
-    tft.fillTriangle(x, y + h / 2 + 10, x - 10, y + h / 2 - 2, x + 10, y + h / 2 - 2, C_CYAN);
-    tft.fillCircle(x - 2, y - 6, 3, C_BLACK);
-    tft.fillCircle(x - 1, y - 7, 1, C_WHITE);
-  }
 }
 
 static void actionStep(unsigned long now) {
@@ -717,25 +1078,6 @@ static void actionStep(unsigned long now) {
       endAction();
       return;
     }
-    case ACT_WINDMILL: {
-      if (stepIdx == 0) {
-        clearProps();
-        drawEyesSmart(-20, 60, false);
-        stepDueAt = now + 60;
-        stepIdx = 1;
-        return;
-      }
-      if (stepIdx < 1 + 26) {
-        drawWindmillFrame(((stepIdx - 1) % 2) == 0);
-        stepDueAt = now + 110;
-        stepIdx++;
-        return;
-      }
-      clearProps();
-      drawEyesSmart(0, 60, false);
-      endAction();
-      return;
-    }
     case ACT_FLOWER: {
       if (stepIdx == 0) {
         clearProps();
@@ -750,34 +1092,6 @@ static void actionStep(unsigned long now) {
         drawEyesSmartEx(0, EYE_CY, 60, 0, EYE_CY, 6, true);
         stepDueAt = now + 900;
         stepIdx = 2;
-        return;
-      }
-      clearProps();
-      drawEyesSmart(0, 60, false);
-      endAction();
-      return;
-    }
-    case ACT_BUBBLES: {
-      if (stepIdx == 0) {
-        clearProps();
-        drawEyesSmart(20, 30, false);
-        // 简化：画一个泡泡棒
-        tft.fillRect(50, 180, 4, 30, C_PINK);
-        tft.drawCircle(52, 170, 10, C_PINK);
-        stepDueAt = now + 120;
-        stepIdx = 1;
-        return;
-      }
-      if (stepIdx < 1 + 18) {
-        int i = stepIdx - 1;
-        int y = 170 - i * 6;
-        int x = 80 + (i * 7);
-        // 画泡泡
-        tft.drawCircle(x, y, 8, C_CYAN);
-        tft.drawCircle(x + 25, y + 10, 12, C_WHITE);
-        // 过一会儿擦掉（局部）
-        stepDueAt = now + 120;
-        stepIdx++;
         return;
       }
       clearProps();
@@ -985,232 +1299,6 @@ static void actionStep(unsigned long now) {
       endAction();
       return;
     }
-    case ACT_FISHING: {
-      // 钓鱼（四步）：1 抛竿 2 浮漂晃动 3 咬钩挣扎 4 起鱼
-      if (stepIdx == 0) {
-        clearProps();
-        drawEyesSmart(0, 30, false);
-        fishingRodRaised = false;
-        old_fishVertical = false;
-        fishingDrawStatic();
-        old_rod_x1 = fishingRodBaseX();
-        old_rod_y1 = fishingRodBaseY();
-        old_rod_x2 = fishingRodTipX();
-        old_rod_y2 = fishingRodTipY();
-
-        showTopRightStageText("起手抛竿");
-
-        // init state
-        fish_fy = 206.0f;
-        old_fx = 120;
-        old_fy = (int)fish_fy;
-        old_bobX = 210;   // 抛竿起点：右上飞入
-        old_bobY = 150;
-        old_line_x1 = fishingRodTipX(); old_line_y1 = fishingRodTipY();
-        old_line_x2 = old_bobX; old_line_y2 = old_bobY;
-        fishingBite = false;
-        fishingBiteUntil = 0;
-        fishingNextBiteAt = now + (unsigned long)random(900, 2000);
-
-        stepDueAt = now + 160;
-        stepIdx = 1;
-        return;
-      }
-
-      const int CAST_FRAMES = 26;
-      const int FLOAT_FRAMES = 44;
-      const int STRUGGLE_FRAMES = 120;
-      const int LIFT_FRAMES = 46;
-      // 鱼漂始终浮在水面，不做下沉
-      const int APPROACH_FRAMES = 18;    // 鱼先游向鱼漂（鱼找漂）
-      const int base = 1;
-      const int castStart = base;
-      const int floatStart = castStart + CAST_FRAMES;
-      const int struggleStart = floatStart + FLOAT_FRAMES;
-      const int liftStart = struggleStart + STRUGGLE_FRAMES;
-      const int endAt = liftStart + LIFT_FRAMES;
-
-      if (stepIdx >= base && stepIdx < endAt) {
-        // 计算目标
-        int bobX = old_bobX;
-        int bobY = old_bobY;
-        bool drawBobber = true;
-
-        int fx = old_fx;
-        int fy = old_fy;
-        bool drawFish = false;
-        bool fishVertical = false;
-
-        auto setStageText = [&](const char* txt) { showTopRightStageText(txt); };
-
-        if (stepIdx == castStart) setStageText("起手抛竿");
-        if (stepIdx == floatStart) setStageText("静待上钩");
-        if (stepIdx == struggleStart) setStageText("咬钩了！");
-        if (stepIdx == liftStart) setStageText("提竿！");
-
-        if (stepIdx >= castStart && stepIdx < floatStart) {
-          fishingRodRaised = false;
-          // 1) 抛竿：浮漂从右上飞入落水点（120,180）
-          int i = stepIdx - castStart;
-          float p = (float)i / (float)(CAST_FRAMES - 1);
-          // 竿子从“高位”落下到常规位（体现抛竿甩线动作）
-          int rodBaseX = fishingRodBaseX();
-          int rodTipX = fishingRodTipX();
-          int rodBaseY = (int)(155 + (175 - 155) * p);
-          int rodTipY = (int)(110 + (140 - 110) * p);
-
-          bobX = (int)(210 + (120 - 210) * p);
-          bobY = (int)(150 + (180 - 150) * p - 18.0f * sinf(p * 3.14159f));
-          bobY = constrain(bobY, 120, 190);
-
-          // 先清理上一帧竿子区域（竿子端点变化会产生残留）
-          fishingRestoreRodBBox(old_rod_x1, old_rod_y1, old_rod_x2, old_rod_y2);
-          // 更新竿子当前端点（用于背景恢复补画）
-          old_rod_x1 = rodBaseX;
-          old_rod_y1 = rodBaseY;
-          old_rod_x2 = rodTipX;
-          old_rod_y2 = rodTipY;
-          // 画竿子当前帧
-          fishingDrawRod(rodBaseX, rodBaseY, rodTipX, rodTipY);
-        } else if (stepIdx >= floatStart && stepIdx < struggleStart) {
-          fishingRodRaised = false;
-          // 2) 浮漂晃动
-          int i = stepIdx - floatStart;
-          float t = (float)i * 0.35f;
-          bobX = 120 + (int)(sinf(t) * 2.0f);
-          bobY = 180 + (int)(sinf(t * 1.7f) * 2.0f);
-        } else if (stepIdx >= struggleStart && stepIdx < liftStart) {
-          fishingRodRaised = false;
-          // 3) 咬钩后挣扎：鱼在深水博弈，浮漂下沉
-          int i = stepIdx - struggleStart;
-          float wobT = (float)i * 0.28f;
-          int bobXsurf = 120 + (int)(sinf(wobT) * 2.0f);
-          int bobYsurf = 180 + (int)(sinf(wobT * 1.7f) * 2.0f);
-
-          if (i < APPROACH_FRAMES) {
-            // 鱼先游上来找漂：鱼线仍连到漂，鱼在水下靠近漂附近
-            float p = (float)i / (float)(APPROACH_FRAMES - 1);
-            bobX = bobXsurf;
-            bobY = bobYsurf;
-            drawBobber = true;
-
-            fx = (int)(120 + (bobX - 120) * p);
-            fy = (int)(220 + (195 - 220) * p + sinf((float)i * 0.6f) * 2.0f);
-            fy = constrain(fy, 190, 228);
-
-            drawFish = true;
-            fishVertical = false;
-          } else {
-            // 咬钩：鱼漂仍在水面（更剧烈晃动），鱼开始深水挣扎（鱼线连到鱼）
-            if (i == APPROACH_FRAMES) drawEyesSmart(0, 85, true);
-
-            int j = i - APPROACH_FRAMES;
-            // 让鱼漂只在水面范围内抖动（不下水）
-            float bt = (float)j * 0.55f;
-            bobX = 120 + (int)(sinf(bt) * 4.0f);
-            bobY = 180 + (int)(sinf(bt * 1.6f) * 2.0f);
-            bobY = constrain(bobY, 176, 184);
-            drawBobber = true;
-
-            float t2 = (float)j * 0.35f;
-            int baseFy = 206 + (int)(sinf(t2 * 1.2f) * 4.0f);
-            fy = constrain(baseFy, 194, 228);
-            fx = 120 + (int)(sinf(t2) * 16.0f);
-
-            if (j == (STRUGGLE_FRAMES - APPROACH_FRAMES) / 2) drawEyesSmart(0, 40, false);
-
-            drawFish = true;
-            fishVertical = false;
-          }
-        } else {
-          // 起鱼：提竿更高
-          fishingRodRaised = true;
-          // 4) 起鱼：浮漂消失，鱼从水里被拉起到空中
-          int i = stepIdx - liftStart;
-          float p = (float)i / (float)(LIFT_FRAMES - 1);
-
-          drawBobber = false;
-
-          fx = (int)(120 + (150 - 120) * p + sinf(p * 3.14159f) * 10.0f);
-          fy = (int)(206 + (140 - 206) * p);
-          fy = constrain(fy, 120, 228);
-
-          drawFish = true;
-          fishVertical = true; // 起鱼阶段鱼头朝上
-          if (i == 0) drawEyesSmart(0, 85, true);
-          if (i == LIFT_FRAMES - 1) drawEyesSmart(0, 30, true);
-        }
-
-        // 1) 擦上一帧（鱼 / 浮漂 / 鱼线）
-        // 鱼尾/鱼头三角会超出 body，擦除范围要更大，避免残留像素
-        fishingRestoreRect(old_fx - old_fish_w / 2 - 10, old_fy - old_fish_h / 2 - 12, old_fish_w + 20, old_fish_h + 24);
-        fishingRestoreRect(old_bobX - 10, old_bobY - 10, 20, 20);
-        {
-          // 线条容易产生 1px 残留，扩大擦除范围
-          int lx0 = min(old_line_x1, old_line_x2) - 6;
-          int ly0 = min(old_line_y1, old_line_y2) - 6;
-          int lx1 = max(old_line_x1, old_line_x2) + 6;
-          int ly1 = max(old_line_y1, old_line_y2) + 6;
-          fishingRestoreRect(lx0, ly0, lx1 - lx0, ly1 - ly0);
-        }
-        // 竿子（起鱼阶段竿尖会上移，也需要清理上一帧竿子区域）
-        fishingRestoreRodBBox(old_rod_x1, old_rod_y1, old_rod_x2, old_rod_y2);
-
-        // 2) 画本帧（先线，再物体）
-        int tipX = fishingRodTipX();
-        int tipY = fishingRodTipY();
-        // 抛竿阶段鱼竿端点在阶段分支内动态绘制；此处不要用“底部固定竿”覆盖
-        if (!(stepIdx >= castStart && stepIdx < floatStart)) {
-          old_rod_x1 = fishingRodBaseX();
-          old_rod_y1 = fishingRodBaseY();
-          old_rod_x2 = tipX;
-          old_rod_y2 = tipY;
-          fishingDrawRod(old_rod_x1, old_rod_y1, old_rod_x2, old_rod_y2);
-        } else {
-          // 使用抛竿阶段已绘制的竿尖作为鱼线起点
-          tipX = old_rod_x2;
-          tipY = old_rod_y2;
-        }
-        if (drawBobber) {
-          tft.drawLine(tipX, tipY, bobX, bobY, C_BLACK);
-          fishingDrawBobberXY(bobX, bobY);
-        } else {
-          tft.drawLine(tipX, tipY, fx, fy, C_BLACK);
-        }
-
-        if (drawFish) {
-          fishingDrawFishUnified(fx, fy, fishVertical, (float)stepIdx * 0.35f);
-        }
-
-        // 记录本帧
-        old_fx = fx;
-        old_fy = fy;
-        old_fishVertical = fishVertical;
-        // 与 fishingDrawFishUnified 的尺寸保持一致（横/竖互换）
-        old_fish_w = fishVertical ? 16 : 24;
-        old_fish_h = fishVertical ? 24 : 16;
-        old_bobX = bobX;
-        old_bobY = bobY;
-        old_line_x1 = tipX;
-        old_line_y1 = tipY;
-        if (drawBobber) {
-          old_line_x2 = bobX;
-          old_line_y2 = bobY;
-        } else {
-          old_line_x2 = fx;
-          old_line_y2 = fy;
-        }
-
-        stepDueAt = now + 55;
-        stepIdx++;
-        return;
-      }
-
-      clearProps();
-      drawEyesSmart(0, 60, false);
-      endAction();
-      return;
-    }
     case ACT_SLEEPING: {
       // 10 分钟冷却：如果未到时间，直接结束并重新调度
       if (stepIdx == 0) {
@@ -1301,30 +1389,6 @@ static void actionStep(unsigned long now) {
       }
       // 擦掉耳机
       drawHeadphonesFrame(false);
-      clearProps();
-      drawEyesSmart(0, 60, false);
-      endAction();
-      return;
-    }
-    case ACT_LOVE: {
-      if (stepIdx == 0) {
-        clearProps();
-        drawEyesSmart(0, 30, true);
-        showBottomText("爱心暴击！");
-        stepDueAt = now + 80;
-        stepIdx = 1;
-        return;
-      }
-      if (stepIdx < 1 + 10) {
-        int i = stepIdx - 1;
-        // 两个爱心从眼睛附近冒出来
-        int ly = 120 + i * 6;
-        drawHeart(70, ly, 6, C_PINK);
-        drawHeart(170, ly, 6, C_PINK);
-        stepDueAt = now + 120;
-        stepIdx++;
-        return;
-      }
       clearProps();
       drawEyesSmart(0, 60, false);
       endAction();
@@ -1500,47 +1564,6 @@ static void actionStep(unsigned long now) {
       endAction();
       return;
     }
-    case ACT_SLEEP_MASK: {
-      if (stepIdx == 0) {
-        clearProps();
-        showBottomText("进入省电模式…");
-        drawEyesSmart(0, 4, false);
-        // 眼罩
-        tft.fillRoundRect(40, 60, 160, 50, 18, C_BLACK);
-        tft.fillRect(0, 82, 40, 6, C_BLACK);
-        tft.fillRect(200, 82, 40, 6, C_BLACK);
-        stepDueAt = now + 1400;
-        stepIdx = 1;
-        return;
-      }
-      clearProps();
-      drawEyesSmart(0, 60, false);
-      endAction();
-      return;
-    }
-    case ACT_HEART_RAIN: {
-      if (stepIdx == 0) {
-        clearProps();
-        showBottomText("爱心雨降临！");
-        drawEyesSmart(0, 30, true);
-        stepDueAt = now + 80;
-        stepIdx = 1;
-        return;
-      }
-      if (stepIdx < 1 + 24) {
-        // 随机小爱心落下（画一次即可，背景由下一次 clearProps 统一清）
-        int x = 20 + (int)random(0, 200);
-        int y = 40 + (int)random(0, 150);
-        drawHeart(x, y, 4, C_PINK);
-        stepDueAt = now + 80;
-        stepIdx++;
-        return;
-      }
-      clearProps();
-      drawEyesSmart(0, 60, false);
-      endAction();
-      return;
-    }
     default:
       endAction();
       return;
@@ -1548,54 +1571,337 @@ static void actionStep(unsigned long now) {
 }
 
 void expressionModeEnter() {
-  initColoursOnce();
-  clearProps();
+  g_exprGroup = (exprGroup == 1) ? EXPR_GROUP_COCO : EXPR_GROUP_BUBU;
 
-  lastLX = 0;
-  lastRX = 0;
-  lastLY = EYE_CY;
-  lastRY = EYE_CY;
-  lastLH = 60;
-  lastRH = 60;
-  lastBlush = false;
-
-  busy = false;
-  currentAction = -1;
-  stepIdx = 0;
-  stepDueAt = 0;
-
-  drawEyesSmart(0, 60, false);
-  nextActionTime = millis() + 800;
+  const unsigned long now = millis();
+  if (g_exprGroup == EXPR_GROUP_BUBU) {
+    // bubu：基准表情作为起点；眨眼后回到基准表情
+    if (!g_exprInited) g_exprInited = true;
+    g_exprRenderer.enter();
+    g_exprRenderer.tick(expr_base_frame_static());
+    g_exprIdx = pickNextBubuExprIdx(-1, now);
+    g_exprPlaying = false;
+    g_exprStartAt = 0;
+    g_nextExprAt = now + kExprGapMs;
+  } else {
+    // coco：沿用 actionStep() 表情组
+    initColoursOnce();
+    clearProps();
+    // 重置差分眼睛缓存，避免从别的模式切入时残影
+    lastLX = 0; lastRX = 0;
+    lastLY = EYE_CY; lastRY = EYE_CY;
+    lastLH = 60; lastRH = 60;
+    lastBlush = false;
+    busy = false;
+    currentAction = -1;
+    stepIdx = 0;
+    stepDueAt = 0;
+    nextActionTime = now + (unsigned long)random(300, 1200);
+    drawEyesSmart(0, 60, false);
+  }
 }
 
 void expressionModeTick() {
-  initColoursOnce();
-  const unsigned long nowReal = millis();
-  const unsigned long now = nowReal;
+  const unsigned long now = millis();
 
-  if (!busy) {
-    if (now < nextActionTime) return;
-
-    // 恢复全部表情随机，并移除“钓鱼”表情
-    int a = ACT_BLINK;
-    for (int tries = 0; tries < 12; tries++) {
-      a = random(0, ACT_COUNT);
-      // 移除：魔法/泡泡/音乐/钓鱼/爱心暴击/爱心雨/打招呼
-      if (a == ACT_MAGIC || a == ACT_BUBBLES || a == ACT_MUSIC || a == ACT_FISHING ||
-          a == ACT_LOVE || a == ACT_HEART_RAIN || a == ACT_WAVE) continue;
-      break;
+  if (g_exprGroup == EXPR_GROUP_COCO) {
+    // coco：旧 actionStep() 表情组
+    if (!busy) {
+      if (now < nextActionTime) return;
+      startAction((int)random(0, (int)ACT_COUNT));
     }
-    if (a == ACT_MAGIC || a == ACT_BUBBLES || a == ACT_MUSIC || a == ACT_FISHING ||
-        a == ACT_LOVE || a == ACT_HEART_RAIN || a == ACT_WAVE) a = ACT_BLINK;
-
-    // 睡觉表情限流（10 分钟冷却）
-    if (a == ACT_SLEEPING && lastSleepTime > 0 && (nowReal - lastSleepTime) < SLEEP_COOLDOWN) {
-      a = ACT_BLINK;
-    }
-
-    startAction(a);
+    actionStep(now);
+    return;
   }
 
-  actionStep(now);
+  // bubu：渲染器差分表情组（base -> expr -> base -> gap -> next expr）
+  static unsigned long lastFrameAt = 0;
+  // 分支帧率：眨眼/转圈/哭/睡略快(80ms)；左右看/上下看/唱歌较慢(100ms)
+  const unsigned long frameIntervalMs =
+      (g_exprIdx == 0 || g_exprIdx == 2 || g_exprIdx == 4 || g_exprIdx == 7) ? 80UL : 100UL;
+  if (lastFrameAt && (now - lastFrameAt) < frameIntervalMs) return;
+  lastFrameAt = now;
+
+  if (!g_exprPlaying) {
+    if (now < g_nextExprAt) return;
+    g_exprPlaying = true;
+    g_exprStartAt = now;
+  }
+
+  ExprFrame f = expr_base_frame_static();
+  bool done = false;
+  if (g_exprIdx == 0) {
+    // Expression #1: blink both
+    const unsigned long el = now - g_exprStartAt;
+    const float t01 = (kBlinkDurMs > 0) ? (el / (float)kBlinkDurMs) : 1.0f;
+    if (t01 >= 1.0f) {
+      done = true;
+    } else {
+      const float k = blink_profile_local(t01);
+      const float mul = (1.0f - 0.995f * k);
+      f.openL = clamp01_local(f.openL * mul);
+      f.openR = clamp01_local(f.openR * mul);
+    }
+  } else if (g_exprIdx == 1) {
+    // Expression #2: look right -> left -> center
+    const unsigned long el = now - g_exprStartAt;
+    const float t01 = (kLookLRDurMs > 0) ? (el / (float)kLookLRDurMs) : 1.0f;
+    if (t01 >= 1.0f) {
+      done = true;
+    } else {
+      float gx = look_lr_profile_local(t01, 0.85f);
+      // Coarser steps = fewer pupil redraws = less flash
+      gx = quant_local(gx, 0.12f);
+      f.gazeX = clamp_local(gx, -1.0f, 1.0f);
+    }
+  } else if (g_exprIdx == 2) {
+    // Expression #3: pupil circle clockwise
+    const unsigned long el = now - g_exprStartAt;
+    const float t01 = (kCircleDurMs > 0) ? (el / (float)kCircleDurMs) : 1.0f;
+    if (t01 >= 1.0f) {
+      done = true;
+    } else {
+      // y axis points down on screen; use -sin to get clockwise.
+      const float t = clamp01_local(t01);
+      const float ang = 6.2831853f * t;
+
+      // 轨迹：与眼白外轮廓同形（在屏幕位移空间里保持“同一椭圆比”）。
+      // 目标：瞳孔外轮廓离眼白边缘最近处始终留 4px，看起来像在眼白内沿转动。
+      // 先算出允许的中心位移（像素）：a = baseRx - pupilRx - margin，b = baseRy - pupilRy - margin，
+      // 再换算成 gazeX/gazeY 振幅（renderer 里 gaze->像素系数分别是 0.35*baseRx 与 0.28*baseRy）。
+      int16_t prx = 0, pry = 0;
+      expression_pupil_radii_from_t(f.pupil, prx, pry);
+      const float marginPx = 4.0f;
+      const float aPx = max(0.0f, (float)kBaseRx - (float)prx - marginPx);
+      // 关键：上下边界取“当前开口 eyeRyNow”，否则瞳孔会在上/下方越过眼白开口边缘。
+      const float eyeRyNowPx = (float)max((int16_t)1, expression_eye_ry_from_open(f.openL));
+      const float bPx = max(0.0f, eyeRyNowPx - (float)pry - marginPx);
+      const float ax = clamp_local(aPx / ((float)kBaseRx * 0.35f), 0.0f, 1.0f);
+      const float ay = clamp_local(bPx / ((float)kBaseRy * 0.28f), 0.0f, 1.0f);
+
+      // 先把“斗鸡眼基线偏置”平滑关掉，让瞳孔回到真正中心，再执行内切轨迹，避免溢出眼白。
+      const float centerLead = 0.14f; // 前 14% 用于回正中
+      const float leadT = smoothstep_local(clamp01_local(t / centerLead));
+      f.crossEyeT = 1.0f - leadT; // 1 -> 0
+
+      // 首尾补轨迹：淡入/淡出到中心，避免从(0,0)突然跳到椭圆边界、或结束突然回到(0,0)。
+      const float fade = 0.18f; // 前后 18% 做平滑过渡
+      const float wIn = smoothstep_local(t / fade);
+      const float wOut = smoothstep_local((1.0f - t) / fade);
+      const float w = wIn * wOut; // 0 -> 1 -> 0
+
+      float gx = cosf(ang) * ax * w;
+      float gy = -sinf(ang) * ay * w;
+
+      // Same anti-flicker strategy as #2, but finer steps for smoother ellipse.
+      gx = quant_local(gx, 0.08f);
+      gy = quant_local(gy, 0.08f);
+      // Quantization may round outward; clamp back to the allowed inset-ellipse range for this frame.
+      const float gxMax = ax * w;
+      const float gyMax = ay * w;
+      gx = clamp_local(gx, -gxMax, gxMax);
+      gy = clamp_local(gy, -gyMax, gyMax);
+      f.gazeX = clamp_local(gx, -1.0f, 1.0f);
+      f.gazeY = clamp_local(gy, -1.0f, 1.0f);
+    }
+  } else if (g_exprIdx == 3) {
+    // Expression #4: half-close both eyes for 3s, then open
+    const unsigned long el = now - g_exprStartAt;
+    const unsigned long total = kHalfCloseInMs + kHalfCloseHoldMs + kHalfCloseOutMs;
+    if (total == 0 || el >= total) {
+      done = true;
+    } else {
+      const float baseOpen = f.openL; // base frame uses same for L/R
+      const float halfOpen = 0.24f;
+      if (el < kHalfCloseInMs) {
+        const float t = smoothstep_local((float)el / (float)max(1UL, kHalfCloseInMs));
+        const float o = lerp_local(baseOpen, halfOpen, t);
+        f.openL = clamp01_local(o);
+        f.openR = clamp01_local(o);
+      } else if (el < (kHalfCloseInMs + kHalfCloseHoldMs)) {
+        f.openL = halfOpen;
+        f.openR = halfOpen;
+      } else {
+        const unsigned long e2 = el - (kHalfCloseInMs + kHalfCloseHoldMs);
+        const float t = smoothstep_local((float)e2 / (float)max(1UL, kHalfCloseOutMs));
+        const float o = lerp_local(halfOpen, baseOpen, t);
+        f.openL = clamp01_local(o);
+        f.openR = clamp01_local(o);
+      }
+    }
+  } else if (g_exprIdx == 4) {
+    // Expression #5: cry — 紧闭（open=0）+ 眼下蓝竖条泪 + 伤心嘴
+    const unsigned long el = now - g_exprStartAt;
+    const unsigned long total = kCryInMs + kCryHoldMs + kCryOutMs;
+    if (total == 0 || el >= total) {
+      done = true;
+    } else {
+      const float baseOpen = f.openL;
+      constexpr float kCryClosedOpen = 0.0f;
+      if (el < kCryInMs) {
+        const float t = smoothstep_local((float)el / (float)max(1UL, kCryInMs));
+        const float o = lerp_local(baseOpen, kCryClosedOpen, t);
+        f.openL = clamp01_local(o);
+        f.openR = clamp01_local(o);
+      } else if (el < (kCryInMs + kCryHoldMs)) {
+        f.openL = kCryClosedOpen;
+        f.openR = kCryClosedOpen;
+      } else {
+        const unsigned long e2 = el - (kCryInMs + kCryHoldMs);
+        const float t = smoothstep_local((float)e2 / (float)max(1UL, kCryOutMs));
+        const float o = lerp_local(kCryClosedOpen, baseOpen, t);
+        f.openL = clamp01_local(o);
+        f.openR = clamp01_local(o);
+      }
+      f.mouth = MouthId::SMILE_INVERTED; // 哭泣：向上凸弧嘴
+      f.gazeX = 0.0f;
+      f.gazeY = 0.16f;
+    }
+  } else if (g_exprIdx == 5) {
+    // Expression #6: look down -> up -> center（复用 look_lr 相位，映射到 gazeY；屏幕 y 向下为正）
+    const unsigned long el = now - g_exprStartAt;
+    const float t01 = (kLookUDDurMs > 0) ? (el / (float)kLookUDDurMs) : 1.0f;
+    if (t01 >= 1.0f) {
+      done = true;
+    } else {
+      float gy = look_lr_profile_local(t01, 0.85f);
+      gy = quant_local(gy, 0.12f);
+      f.gazeX = 0.0f;
+      f.gazeY = clamp_local(gy, -1.0f, 1.0f);
+    }
+  } else if (g_exprIdx == 6) {
+    // Expression #7: sing — 全睁 + O 嘴 + 斜向话筒（道具在 tick 后绘制）
+    const unsigned long el = now - g_exprStartAt;
+    const float t01 = (kSingDurMs > 0) ? (el / (float)kSingDurMs) : 1.0f;
+    if (t01 >= 1.0f) {
+      done = true;
+    } else {
+      f.gazeX = 0.52f;
+      f.gazeY = 0.24f;
+      f.pupil = 0.36f;
+      f.mouthCxOfs = 14;
+      // openL/openR 沿用 expr_base_frame_static() 全睁
+      f.hidePupil = false;
+      f.mouth = MouthId::SLEEP_O;
+      {
+        const float ph = (float)el * (6.2831853f / kSingMouthOCycleMs);
+        const float w = 0.5f + 0.5f * sinf(ph);
+        f.sleepMouthO = lerp_local(kSingMouthOMin, kSingMouthOMax, w);
+      }
+    }
+  } else if (g_exprIdx == 7) {
+    // Expression #8: sleep — slit + ZZZ
+    const unsigned long el = now - g_exprStartAt;
+    const unsigned long total = kSleepCloseMs + kSleepHoldMs + kSleepZzzPreOpenMs + kSleepOpenMs;
+    if (total == 0 || el >= total) {
+      done = true;
+    } else {
+      const float baseOpen = 0.62f;
+      f.mouth = MouthId::SLEEP_O;
+      {
+        static float s_sleepMouthFilt = 0.5f;
+        const float ph = (float)el * (6.2831853f / kSleepMouthOCycleMs);
+        const float tgt = 0.5f + 0.5f * sinf(ph);
+        // 每轮睡觉开头对齐目标，其余帧低通，减轻 O 大小变化过快带来的闪感
+        if (el < 64UL) s_sleepMouthFilt = tgt;
+        else s_sleepMouthFilt += (tgt - s_sleepMouthFilt) * 0.14f;
+        f.sleepMouthO = s_sleepMouthFilt;
+      }
+      f.gazeX = 0.0f;
+      f.gazeY = 0.0f;
+      if (el < kSleepCloseMs) {
+        const float t = smoothstep_local((float)el / (float)max(1UL, kSleepCloseMs));
+        const float o = lerp_local(baseOpen, kSleepSlitOpen, t);
+        f.openL = clamp01_local(o);
+        f.openR = clamp01_local(o);
+      } else if (el < kSleepCloseMs + kSleepHoldMs) {
+        f.openL = kSleepSlitOpen;
+        f.openR = kSleepSlitOpen;
+      } else if (el < kSleepCloseMs + kSleepHoldMs + kSleepZzzPreOpenMs) {
+        f.openL = kSleepSlitOpen;
+        f.openR = kSleepSlitOpen;
+      } else {
+        const unsigned long e2 = el - (kSleepCloseMs + kSleepHoldMs + kSleepZzzPreOpenMs);
+        const float t = smoothstep_local((float)e2 / (float)max(1UL, kSleepOpenMs));
+        const float o = lerp_local(kSleepSlitOpen, baseOpen, t);
+        f.openL = clamp01_local(o);
+        f.openR = clamp01_local(o);
+      }
+      const float oMin = f.openL < f.openR ? f.openL : f.openR;
+      f.hidePupil = (oMin <= kSleepHidePupilOpenMax);
+    }
+  }
+
+  if (done) {
+    const int prevExpr = g_exprIdx;
+    const bool endingSleep = (g_exprIdx == 7);
+    const bool endingCry = (g_exprIdx == 4);
+    const bool endingSing = (g_exprIdx == 6);
+    if (endingSing) {
+      clearSingOverlay();
+      g_exprRenderer.invalidateEyesAfterExternalClear();
+      g_exprRenderer.clearMouthBoxToBg();
+    }
+    if (endingSleep) {
+      bubuSleepZzzForeheadClear();
+      g_exprRenderer.invalidateEyesAfterExternalClear();
+      g_exprRenderer.clearMouthBoxToBg();
+      g_bubuLastSleepEndedAt = now;
+    }
+    if (endingCry) {
+      {
+        const EyeGeom eL = expression_eye_left();
+        const EyeGeom eR = expression_eye_right();
+        bubuCryTearsClearPillarStrips(88, DISP_H, eL.cx, eR.cx, kCryClearW);
+      }
+      g_exprRenderer.invalidateEyesAfterExternalClear();
+      g_exprRenderer.clearMouthBoxToBg();
+    }
+    g_exprRenderer.tick(expr_base_frame_static());
+    g_exprPlaying = false;
+    g_exprIdx = pickNextBubuExprIdx(prevExpr, now);
+    g_nextExprAt = now + kExprGapMs;
+    return;
+  }
+
+  if (g_exprIdx == 7 && g_exprPlaying) {
+    const unsigned long el = now - g_exprStartAt;
+    if (el >= kSleepCloseMs + kSleepHoldMs && el < kSleepCloseMs + kSleepHoldMs + kSleepZzzPreOpenMs) {
+      bubuSleepZzzForeheadClear();
+      g_exprRenderer.invalidateEyesAfterExternalClear();
+    }
+  }
+
+  g_exprRenderer.tick(f);
+
+  if (g_exprIdx == 6 && g_exprPlaying) {
+    initColoursOnce();
+    static unsigned long s_singLyricsForStart = 0xffffffffUL;
+    static const char* s_singLyricChosen = nullptr;
+    const bool singJustStarted = (s_singLyricsForStart != g_exprStartAt);
+    if (singJustStarted) {
+      s_singLyricsForStart = g_exprStartAt;
+      const int pick = (int)random(0, kBubuSingLyricsCount);
+      s_singLyricChosen = kBubuSingLyrics[pick];
+    }
+    // 话筒每帧重画；歌词仅在进入本段时画一次（带在 y≥210 且话筒不侵入，嘴清屏不触及，避免每帧刷字闪屏）
+    drawSingMicOnce();
+    if (singJustStarted && s_singLyricChosen) {
+      showSingLyricsWrapped(s_singLyricChosen);
+    }
+  }
+
+  if (g_exprIdx == 4 && g_exprPlaying) {
+    const unsigned long el = now - g_exprStartAt;
+    drawBubuCryTears(f, el);
+  }
+
+  if (g_exprIdx == 7 && g_exprPlaying) {
+    const unsigned long el = now - g_exprStartAt;
+    initColoursOnce();
+    if (el >= kSleepCloseMs && el < kSleepCloseMs + kSleepHoldMs) {
+      drawBubuSleepZzz(el - kSleepCloseMs);
+    }
+  }
 }
 

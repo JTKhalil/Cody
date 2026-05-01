@@ -26,6 +26,7 @@ void resetUserFilesystemToDefaults() {
   slideshowEnabled = true;
   lastImageSwitch = 0;
   lastNoteSwitch = 0;
+  exprGroup = 0;
   saveConfig();
 }
 
@@ -40,6 +41,7 @@ void saveConfig() {
   f.print(pinnedNoteIndex); f.print("\n");
   f.print(noteSlideshowEnabled ? "1" : "0"); f.print("\n");
   f.print(noteSwitchInterval); f.print("\n");
+  f.print(exprGroup); f.print("\n");
   f.close();
 }
 
@@ -54,9 +56,12 @@ void loadConfig() {
       if (f.available()) pinnedNoteIndex = f.parseInt(); else pinnedNoteIndex = -1;
       if (f.available()) noteSlideshowEnabled = f.parseInt() == 1; else noteSlideshowEnabled = false;
       if (f.available()) noteSwitchInterval = f.parseInt(); else noteSwitchInterval = 10;
+      if (f.available()) exprGroup = f.parseInt(); else exprGroup = 0;
       f.close();
     }
   }
+
+  if (exprGroup != 0 && exprGroup != 1) exprGroup = 0;
 
   switchInterval = constrain(switchInterval, 3, 60);
   noteSwitchInterval = constrain(noteSwitchInterval, 3, 60);

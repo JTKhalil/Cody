@@ -75,6 +75,7 @@ WebServer server(80);
 
 int lastMinute = -1;
 int displayMode = 0;
+int exprGroup = 0;
 int backlightValue = 255;
 
 int imageCount = 0;

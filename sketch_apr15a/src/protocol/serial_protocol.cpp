@@ -277,7 +277,21 @@ void processSerialCommand(const String& payload) {
     resDoc["ms"] = millis();
   } else if (cmd == "get_mode") {
     resDoc["mode"] = displayMode;
+    resDoc["expr_group"] = exprGroup;
     resDoc["guess_show_answer"] = guess_game_is_showing_answer();
+  } else if (cmd == "set_expr_group") {
+    int g = doc.containsKey("expr_group") ? doc["expr_group"].as<int>()
+                                        : (doc.containsKey("group") ? doc["group"].as<int>() : -1);
+    if (g == 0 || g == 1) {
+      exprGroup = g;
+      saveConfig();
+      if (!settingsActive) {
+        refreshDisplayByMode();
+      }
+    } else {
+      resDoc["status"] = "error";
+      resDoc["msg"] = "bad_expr_group";
+    }
   } else if (cmd == "set_mode") {
     int nM = doc["mode"].as<int>();
     if (nM >= 0 && nM <= 4) {

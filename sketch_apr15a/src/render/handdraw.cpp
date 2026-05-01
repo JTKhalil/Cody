@@ -137,10 +137,24 @@ static void handdraw_present_framebuffer() {
     u8g2.setFont(u8g2_font_wqy16_t_gb2312);
     u8g2.setFontMode(1);
     u8g2.setForegroundColor(ST77XX_WHITE);
-    const char* hint = "请在小程序端进行绘画";
-    const int tw = u8g2.getUTF8Width(hint);
-    u8g2.setCursor((kW - tw) / 2, kH / 2 + 8);
-    u8g2.print(hint);
+    // 提示语过长：拆为两行，并整体垂直居中显示
+    const char* l1 = "请在\"Cody控制台\"";
+    const char* l2 = "小程序端进行绘画";
+    const int w1 = u8g2.getUTF8Width(l1);
+    const int w2 = u8g2.getUTF8Width(l2);
+    const int ascent = u8g2.getFontAscent();
+    const int descent = u8g2.getFontDescent(); // 通常为负
+    const int lineH = ascent - descent;
+    const int gap = 4;
+    const int totalH = lineH * 2 + gap;
+    const int topY = (kH - totalH) / 2;
+    const int y1 = topY + ascent;
+    const int y2 = y1 + lineH + gap;
+
+    u8g2.setCursor((kW - w1) / 2, y1);
+    u8g2.print(l1);
+    u8g2.setCursor((kW - w2) / 2, y2);
+    u8g2.print(l2);
   }
   guess_game_redraw_overlays();
 }

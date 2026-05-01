@@ -48,14 +48,46 @@ void drawClockFace() {
     u8g2.setFontMode(1);
     u8g2.setForegroundColor(ST77XX_WHITE);
     const char* msg1 = "时间未校准";
-    const char* msg2 = cody_ble_is_connected() ? "已连接小程序，正在同步时间" : "请连接 BLE 小程序校时";
-    int w1 = u8g2.getUTF8Width(msg1);
-    int w2 = u8g2.getUTF8Width(msg2);
-    u8g2.setCursor((240 - w1) / 2, 112);
-    u8g2.print(msg1);
-    u8g2.setForegroundColor(0xAD55);
-    u8g2.setCursor((240 - w2) / 2, 140);
-    u8g2.print(msg2);
+    const int ascent = u8g2.getFontAscent();
+    const int descent = u8g2.getFontDescent(); // 通常为负
+    const int lineH = ascent - descent;
+    const int gap = 4;
+
+    // 将“时间未校准 + (提示)”整体放到屏幕正中间
+    if (cody_ble_is_connected()) {
+      const char* msg2 = "已连接小程序，正在同步时间";
+      const int totalH = lineH * 2 + gap;
+      const int topY = (240 - totalH) / 2;
+      const int y1 = topY + ascent;
+      const int y2 = y1 + lineH + gap;
+
+      int w1 = u8g2.getUTF8Width(msg1);
+      int w2 = u8g2.getUTF8Width(msg2);
+      u8g2.setCursor((240 - w1) / 2, y1);
+      u8g2.print(msg1);
+      u8g2.setForegroundColor(0xAD55);
+      u8g2.setCursor((240 - w2) / 2, y2);
+      u8g2.print(msg2);
+    } else {
+      const char* l1 = "请连接\"Cody控制台\"";
+      const char* l2 = "小程序端进行自动校时";
+      const int totalH = lineH * 3 + gap * 2;
+      const int topY = (240 - totalH) / 2;
+      const int y1 = topY + ascent;
+      const int y2 = y1 + lineH + gap;
+      const int y3 = y2 + lineH + gap;
+
+      int w1 = u8g2.getUTF8Width(msg1);
+      int w2 = u8g2.getUTF8Width(l1);
+      int w3 = u8g2.getUTF8Width(l2);
+      u8g2.setCursor((240 - w1) / 2, y1);
+      u8g2.print(msg1);
+      u8g2.setForegroundColor(0xAD55);
+      u8g2.setCursor((240 - w2) / 2, y2);
+      u8g2.print(l1);
+      u8g2.setCursor((240 - w3) / 2, y3);
+      u8g2.print(l2);
+    }
     // 与 loop 里「分钟变化才重画」对齐，避免刚切到时钟后立刻再全屏画一次导致闪屏
     lastMinute = -1;
     s_clockDom = -1;
@@ -263,16 +295,25 @@ void displayNoteOnScreen() {
 
   u8g2.setFont(u8g2_font_wqy16_t_gb2312);
   u8g2.setForegroundColor(ST77XX_YELLOW);
-  String title = "我的笔记";
-  int tw = u8g2.getUTF8Width(title.c_str());
-  u8g2.setCursor((240 - tw) / 2, 25);
-  u8g2.print(title);
-  tft.drawFastHLine(20, 35, 200, 0x4208);
-
   if (!LittleFS.exists("/notes.json")) {
+    // 没有笔记：不显示「我的笔记」与下划线，提示语放在屏幕正中间
     u8g2.setForegroundColor(ST77XX_WHITE);
-    u8g2.setCursor(10, 116);
-    u8g2.print("暂无笔记");
+    const char* l1 = "请在\"Cody控制台\"";
+    const char* l2 = "小程序端新增笔记";
+    const int w1 = u8g2.getUTF8Width(l1);
+    const int w2 = u8g2.getUTF8Width(l2);
+    const int ascent = u8g2.getFontAscent();
+    const int descent = u8g2.getFontDescent(); // 通常为负
+    const int lineH = ascent - descent;
+    const int gap = 4;
+    const int totalH = lineH * 2 + gap;
+    const int topY = (240 - totalH) / 2;
+    const int y1 = topY + ascent;
+    const int y2 = y1 + lineH + gap;
+    u8g2.setCursor((240 - w1) / 2, y1);
+    u8g2.print(l1);
+    u8g2.setCursor((240 - w2) / 2, y2);
+    u8g2.print(l2);
     return;
   }
 
@@ -283,11 +324,34 @@ void displayNoteOnScreen() {
 
   int noteCount = doc.size();
   if (noteCount == 0) {
+    // 没有笔记：不显示「我的笔记」与下划线，提示语放在屏幕正中间
     u8g2.setForegroundColor(ST77XX_WHITE);
-    u8g2.setCursor(10, 116);
-    u8g2.print("笔记为空");
+    const char* l1 = "请在\"Cody控制台\"";
+    const char* l2 = "小程序端新增笔记";
+    const int w1 = u8g2.getUTF8Width(l1);
+    const int w2 = u8g2.getUTF8Width(l2);
+    const int ascent = u8g2.getFontAscent();
+    const int descent = u8g2.getFontDescent(); // 通常为负
+    const int lineH = ascent - descent;
+    const int gap = 4;
+    const int totalH = lineH * 2 + gap;
+    const int topY = (240 - totalH) / 2;
+    const int y1 = topY + ascent;
+    const int y2 = y1 + lineH + gap;
+    u8g2.setCursor((240 - w1) / 2, y1);
+    u8g2.print(l1);
+    u8g2.setCursor((240 - w2) / 2, y2);
+    u8g2.print(l2);
     return;
   }
+
+  // 有笔记：再绘制标题与分隔线
+  u8g2.setForegroundColor(ST77XX_YELLOW);
+  String title = "我的笔记";
+  int tw = u8g2.getUTF8Width(title.c_str());
+  u8g2.setCursor((240 - tw) / 2, 25);
+  u8g2.print(title);
+  tft.drawFastHLine(20, 35, 200, 0x4208);
 
   int targetIndex = noteCount - 1;
   if (pinnedNoteIndex >= 0 && pinnedNoteIndex < noteCount) {
@@ -781,7 +845,7 @@ void drawBlePairPrompt(const char* peer) {
 
   u8g2.setForegroundColor(ST77XX_CYAN);
   u8g2.setCursor(10, 24);
-  u8g2.print("蓝牙连接请求");
+  u8g2.print("小程序连接请求");
   tft.drawFastHLine(10, 32, 220, 0x4208);
 
   u8g2.setForegroundColor(0xAD55);
@@ -794,16 +858,21 @@ void drawBlePairPrompt(const char* peer) {
   // 中部进度条（长按过程中更新）
   tft.drawRect(30, 138, 180, 14, 0x4208);
   tft.fillRect(31, 139, 178, 12, ST77XX_BLACK);
-  // 初始 0%
-  u8g2.setForegroundColor(0xAD55);
-  u8g2.setCursor(108, 174);
-  u8g2.print("0%");
-
-  // bottom hint
-  tft.fillRect(0, 214, 240, 26, ST77XX_BLACK);
-  u8g2.setForegroundColor(0xAD55);
-  u8g2.setCursor(10, 236);
-  u8g2.print("短按拒绝 / 长按允许");
+  // 操作提示：放在进度条下方，使用醒目颜色（红/绿）
+  {
+    const char* h1 = "短按左键拒绝";
+    const char* h2 = "长按左键允许";
+    u8g2.setFont(u8g2_font_wqy16_t_gb2312);
+    u8g2.setFontMode(1);
+    u8g2.setForegroundColor(ST77XX_RED);
+    int w1 = u8g2.getUTF8Width(h1);
+    u8g2.setCursor((240 - w1) / 2, 178);
+    u8g2.print(h1);
+    u8g2.setForegroundColor(ST77XX_GREEN);
+    int w2 = u8g2.getUTF8Width(h2);
+    u8g2.setCursor((240 - w2) / 2, 202);
+    u8g2.print(h2);
+  }
 }
 
 void drawBlePairProgress(uint8_t pct) {
@@ -815,16 +884,6 @@ void drawBlePairProgress(uint8_t pct) {
   if (fillW > 0) {
     tft.fillRect(x, y, fillW, h, tft.color565(130, 235, 170));
   }
-  // 百分比文字：只擦一小条文本区
-  tft.fillRect(92, 162, 60, 18, ST77XX_BLACK);
-  u8g2.setFont(u8g2_font_wqy16_t_gb2312);
-  u8g2.setFontMode(1);
-  u8g2.setForegroundColor(0xAD55);
-  char buf[8];
-  snprintf(buf, sizeof(buf), "%u%%", (unsigned)pct);
-  int tw = u8g2.getUTF8Width(buf);
-  u8g2.setCursor((240 - tw) / 2, 176);
-  u8g2.print(buf);
 }
 
 static int utf8FirstCharLen(uint8_t c) {
